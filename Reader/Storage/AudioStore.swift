@@ -88,6 +88,46 @@ actor AudioStore {
         return url
     }
 
+    /// 删除某句音频。重录前必须先删：文件名只由 sentenceID 决定，
+    /// 留着旧文件下一次 load 会直接命中它。
+    func delete(
+        bookID: UUID,
+        chapterID: UUID,
+        sentenceID: UUID
+    ) {
+
+        let url =
+            audioDirectory(
+                bookID: bookID,
+                chapterID: chapterID
+            )
+            .appendingPathComponent(
+                "\(sentenceID.uuidString).wav"
+            )
+
+        try? FileManager.default.removeItem(
+            at: url
+        )
+    }
+
+    /// 清掉整本书的合成产物。这里删的是 AIReader/{bookID}/ 整棵目录，
+    /// ChapterStore 的 chapters/ 就在同一棵树下，所以一次删净：只删 .wav 会
+    /// 留下指向已消失文件的 audioURL，那种句子再也不会被重新排产生成。
+    func deleteBook(
+        bookID: UUID
+    ) {
+
+        let url =
+            rootURL.appendingPathComponent(
+                bookID.uuidString,
+                isDirectory: true
+            )
+
+        try? FileManager.default.removeItem(
+            at: url
+        )
+    }
+
     private func audioDirectory(
         bookID: UUID,
         chapterID: UUID

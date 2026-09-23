@@ -57,6 +57,93 @@ public enum AudioGeneration: Sendable {
     case audio([Float])
 }
 
+// MARK: - Decode Step Probe（临时插桩，P0-1）
+
+/// 自回归单帧的分段耗时探针：talker 前向 / 采样同步 / code predictor 15 步。
+/// 每帧只取 4 次墙钟，25 帧聚合一行日志。用完把 `enabled` 置 false 即完全静默。
+struct DecodeStepProbe {
+
+    static var enabled = true
+
+    private var marker = CFAbsoluteTimeGetCurrent()
+    private var talker = 0.0
+    private var sample = 0.0
+    private var codes = 0.0
+    private var frames = 0
+    private var slowestFrame = 0.0
+    private var totalTalker = 0.0
+    private var totalSample = 0.0
+    private var totalCodes = 0.0
+    private var windowTalker = 0.0
+    private var windowSample = 0.0
+    private var windowCodes = 0.0
+    private var windowFrames = 0
+    private var dtypeLogged = false
+
+    private mutating func elapsed() -> Double {
+        let now = CFAbsoluteTimeGetCurrent()
+        let dt = (now - marker) * 1000
+        marker = now
+        return dt
+    }
+
+    /// 首帧打印一次实际计算 dtype：4bit 权重反量化后若落到 float32，这里就能看见。
+    mutating func afterTalker(
+        logitsDtype: @autoclosure () -> String = "?",
+        hiddenDtype: @autoclosure () -> String = "?"
+    ) {
+        guard Self.enabled else { return }
+        talker = elapsed()
+        if !dtypeLogged {
+            dtypeLogged = true
+            print("[Perf] 计算 dtype：logits=\(logitsDtype()) hidden=\(hiddenDtype())")
+        }
+    }
+
+    mutating func afterSample() {
+        guard Self.enabled else { return }
+        sample = elapsed()
+    }
+
+    mutating func afterCodes(frameCount: Int) {
+        guard Self.enabled else { return }
+        codes = elapsed()
+        frames += 1
+        windowFrames += 1
+        totalTalker += talker
+        totalSample += sample
+        totalCodes += codes
+        windowTalker += talker
+        windowSample += sample
+        windowCodes += codes
+        let total = talker + sample + codes
+        slowestFrame = max(slowestFrame, total)
+
+        if frames % 25 == 0 {
+            print("[Perf] \(windowLine(frames: frames, frameCount: frameCount))")
+            windowTalker = 0; windowSample = 0; windowCodes = 0; windowFrames = 0
+        }
+    }
+
+    mutating func finish(frameCount: Int) {
+        guard Self.enabled, frames > 0 else { return }
+        let mean = (totalTalker + totalSample + totalCodes) / Double(frames)
+        print(
+            "[Perf] 解码收尾 \(frames) 帧/ \(frameCount) token：单帧均值 \(ms(mean))（talker \(ms(totalTalker / Double(frames))) + sample \(ms(totalSample / Double(frames))) + codes15 \(ms(totalCodes / Double(frames)))），最慢单帧 \(ms(slowestFrame)) = 均值的 \(String(format: "%.2f", slowestFrame / max(mean, 0.001)))x"
+        )
+    }
+
+    private func windowLine(frames: Int, frameCount: Int) -> String {
+        let n = Double(max(windowFrames, 1))
+        return
+            "frame#\(frames) 近\(windowFrames)帧均值：talker=\(ms(windowTalker / n)) sample=\(ms(windowSample / n)) codes15=\(ms(windowCodes / n)) 单帧合计=\(ms((windowTalker + windowSample + windowCodes) / n)) 已产token=\(frameCount)"
+    }
+
+    private func ms(_ value: Double) -> String {
+        String(format: "%.1fms", value)
+    }
+}
+
 // MARK: - Generation Errors
 
 /// Errors that can occur during audio generation.

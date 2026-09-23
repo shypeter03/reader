@@ -91,6 +91,8 @@ actor MLXQwenService: AIService {
     }
 
     func unload() async {
+        // 调度器在分析队列排空时会例行检查卸载，模型从没加载过就别打印「已卸载」。
+        guard isLoaded else { return }
         session = nil
         model = nil
         isLoaded = false
@@ -124,8 +126,13 @@ actor MLXQwenService: AIService {
 
         let response = try await batchSession.respond(to: prompt)
 
-        // 释放本批中间张量缓存，保持峰值稳定。
-        MLX.Memory.clearCache()
+        // 只在缓存真涨上去时回收：MLX allocator 会复用 cached buffer，
+        // 每批无脑 clearCache 会让下一批重新分配全部中间张量。
+        let cached = MLX.Memory.snapshot().cacheMemory
+        if cached > MemoryProbe.clearThresholdBytes {
+            MLX.Memory.clearCache()
+            print("[Memory] cached \(cached / 1_048_576)MB > \(MemoryProbe.clearThresholdBytes / 1_048_576)MB → clearCache")
+        }
 
         return response
     }
@@ -476,6 +483,23 @@ actor MLXQwenService: AIService {
 
 /// 基于 MLX 分配器的内存探针，用于验证分析/TTS 各阶段内存是否稳定（需求 13）。
 enum MemoryProbe {
+
+    /// MLX 的 cacheLimit 默认等于 memoryLimit（≈1.5×recommendedMaxWorkingSetSize），
+    /// 8GB 机器上会把 4~6GB 留在 allocator 里，逼近 jetsam 红线。
+    static let cacheLimitBytes = 2 * 1024 * 1024 * 1024
+
+    /// 缓存超过这个量才回收；以下都靠 allocator 复用已有 buffer。
+    static let clearThresholdBytes = 1_536 * 1024 * 1024
+
+    static func configureCacheLimit() {
+        let current = MLX.Memory.cacheLimit
+        guard current > cacheLimitBytes else {
+            print("[Memory] cacheLimit 保持 \(current / 1_048_576)MB（已不高于目标）")
+            return
+        }
+        MLX.Memory.cacheLimit = cacheLimitBytes
+        print("[Memory] cacheLimit \(current / 1_048_576)MB → \(cacheLimitBytes / 1_048_576)MB")
+    }
 
     static func snapshot() -> (active: Int, cached: Int, peak: Int) {
         let s = MLX.Memory.snapshot()

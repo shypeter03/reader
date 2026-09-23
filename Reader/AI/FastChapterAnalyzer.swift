@@ -27,40 +27,7 @@ actor FastChapterAnalyzer {
         print("================================")
 
         for index in chapter.sentences.indices {
-            let sentence = chapter.sentences[index]
-            var updated = sentence
-
-            let analysis = analyzeSentence(sentence.text)
-
-            updated.type = analysis.type
-            updated.speaker = analysis.speaker
-            updated.characterName = analysis.characterName
-            updated.emotion = analysis.emotion
-            updated.emotionIntensity = analysis.emotionIntensity
-            updated.speed = analysis.speed
-            updated.pitch = analysis.pitch
-
-            if analysis.speaker == .character,
-               let characterName = analysis.characterName {
-
-                let character = chapter.characters.first {
-                    $0.name == characterName
-                }
-
-                if let character {
-                    updated.characterID = character.id
-                } else {
-                    let newCharacter = Character(
-                        name: characterName,
-                        gender: .unknown,
-                        age: .unknown
-                    )
-                    chapter.characters.append(newCharacter)
-                    updated.characterID = newCharacter.id
-                }
-            }
-
-            chapter.sentences[index] = updated
+            chapter.sentences[index] = annotate(chapter.sentences[index], in: &chapter)
         }
 
         chapter.audioStatus = .pending
@@ -69,6 +36,63 @@ actor FastChapterAnalyzer {
         print("================================")
 
         return chapter
+    }
+
+    /// 只标注「尚无参数」的句子并返回快照：这些句子随即可以送进 TTS，
+    /// 开播不必等 LLM。已有参数的句子（可能来自 LLM 校准）原样保留，
+    /// 避免每次翻章把更好的标注退回正则结果。
+    /// 传 `range` 可把标注限制在播放位置附近：远处的句子留给 LLM 定参数，
+    /// 正则那套强情绪指令不该抢先决定整章的听感。
+    func prime(_ chapter: Chapter, in range: Range<Int>? = nil) -> Chapter {
+
+        var chapter = chapter
+
+        let lower = max(0, range?.lowerBound ?? 0)
+        let upper = min(chapter.sentences.count, range?.upperBound ?? chapter.sentences.count)
+        guard lower < upper else { return chapter }
+
+        for index in lower..<upper
+        where chapter.sentences[index].analysisStatus != .completed {
+            chapter.sentences[index] = annotate(chapter.sentences[index], in: &chapter)
+        }
+
+        return chapter
+    }
+
+    private func annotate(
+        _ sentence: Sentence,
+        in chapter: inout Chapter
+    ) -> Sentence {
+
+        let analysis = analyzeSentence(sentence.text)
+        var updated = sentence
+
+        updated.type = analysis.type
+        updated.speaker = analysis.speaker
+        updated.characterName = analysis.characterName
+        updated.emotion = analysis.emotion
+        updated.emotionIntensity = analysis.emotionIntensity
+        updated.speed = analysis.speed
+        updated.pitch = analysis.pitch
+        updated.analysisStatus = .completed
+
+        if analysis.speaker == .character,
+           let characterName = analysis.characterName {
+
+            if let character = chapter.characters.first(where: { $0.name == characterName }) {
+                updated.characterID = character.id
+            } else {
+                let newCharacter = Character(
+                    name: characterName,
+                    gender: .unknown,
+                    age: .unknown
+                )
+                chapter.characters.append(newCharacter)
+                updated.characterID = newCharacter.id
+            }
+        }
+
+        return updated
     }
 
     func unloadModel() async {

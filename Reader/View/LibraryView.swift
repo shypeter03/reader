@@ -20,6 +20,8 @@ struct LibraryView: View {
 
     @State private var processingBookID: UUID?
 
+    @State private var clearCacheTarget: Book?
+
     private let bookStore = BookStore.shared
 
     private let pipeline = ReaderContainer.shared.pipeline
@@ -95,6 +97,35 @@ struct LibraryView: View {
                     ?? "未知错误"
                 )
             }
+            .alert(
+                "清空音频与标注",
+                isPresented: Binding(
+                    get: {
+                        clearCacheTarget != nil
+                    },
+                    set: { value in
+                        if !value {
+                            clearCacheTarget = nil
+                        }
+                    }
+                )
+            ) {
+                Button("取消", role: .cancel) {
+                    clearCacheTarget = nil
+                }
+                Button("清空", role: .destructive) {
+                    if let book = clearCacheTarget {
+                        clearCacheTarget = nil
+                        Task {
+                            await pipeline.clearMediaCache(bookID: book.id)
+                        }
+                    }
+                }
+            } message: {
+                Text(
+                    "删除《\(clearCacheTarget?.title ?? "")》已合成的音频与句子标注，正文与书单保留，重新打开章节会按新流程重新生成。请在没有播放时操作。"
+                )
+            }
             .task {
                 await loadBooks()
             }
@@ -160,7 +191,23 @@ private extension LibraryView {
                         BookDetailView(book: book)
                     } label: {
 
+                        // 长按清理：重新生成音频前必须先清掉旧的错样本，
+                        // 否则 produce 的磁盘命中会把它原样播出来。
+                        #if DEBUG
                         BookCard(book: book)
+                            .contextMenu {
+                                Button {
+                                    clearCacheTarget = book
+                                } label: {
+                                    Label(
+                                        "清空音频与标注",
+                                        systemImage: "arrow.counterclockwise"
+                                    )
+                                }
+                            }
+                        #else
+                        BookCard(book: book)
+                        #endif
                     }
                     .buttonStyle(.plain)
                 }

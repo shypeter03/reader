@@ -634,6 +634,7 @@ public class Qwen3TTSModel: Module {
 
         // Current input
         var currentInput = inputEmbeds
+        var probe = DecodeStepProbe()
         var trailingIdx = 0
 
         // Autoregressive generation
@@ -641,6 +642,7 @@ public class Qwen3TTSModel: Module {
             // Forward through Talker
             let (logits, hiddenStates) = talker(currentInput, cache: cache)
             eval(logits, hiddenStates)
+            probe.afterTalker(logitsDtype: "\(logits.dtype)", hiddenDtype: "\(hiddenStates.dtype)")
 
             // Sample first codebook token
             let nextToken = sampleToken(
@@ -655,6 +657,7 @@ public class Qwen3TTSModel: Module {
             )
 
             let tokenValue = nextToken.item(Int.self)
+            probe.afterSample()
             generatedTokens.append(tokenValue)
 
             // Check EOS
@@ -726,9 +729,12 @@ public class Qwen3TTSModel: Module {
             }
 
             currentInput = textEmbed + codecEmbed
+            probe.afterCodes(frameCount: generatedTokens.count)
         }
 
         // Stack all generated codes: [1, seq_len, 16]
+        probe.finish(frameCount: generatedTokens.count)
+
         guard !generatedCodes.isEmpty else {
             throw Qwen3TTSError.generationFailed("No tokens generated")
         }
@@ -841,6 +847,7 @@ public class Qwen3TTSModel: Module {
 
         // Current input
         var currentInput = inputEmbeds
+        var probe = DecodeStepProbe()
         var trailingIdx = 0
 
         // Autoregressive generation
@@ -848,6 +855,7 @@ public class Qwen3TTSModel: Module {
             // Forward through Talker
             let (logits, hiddenStates) = talker(currentInput, cache: cache)
             eval(logits, hiddenStates)
+            probe.afterTalker(logitsDtype: "\(logits.dtype)", hiddenDtype: "\(hiddenStates.dtype)")
 
             // Sample first codebook token
             let nextToken = sampleToken(
@@ -862,6 +870,7 @@ public class Qwen3TTSModel: Module {
             )
 
             let tokenValue = nextToken.item(Int.self)
+            probe.afterSample()
             generatedTokens.append(tokenValue)
 
             // Check EOS
@@ -933,9 +942,12 @@ public class Qwen3TTSModel: Module {
             }
 
             currentInput = textEmbed + codecEmbed
+            probe.afterCodes(frameCount: generatedTokens.count)
         }
 
         // Stack all generated codes: [1, seq_len, 16]
+        probe.finish(frameCount: generatedTokens.count)
+
         guard !generatedCodes.isEmpty else {
             throw Qwen3TTSError.generationFailed("No tokens generated")
         }
@@ -1068,6 +1080,7 @@ public class Qwen3TTSModel: Module {
 
         var trailingIdx = 0
         var currentInput = inputEmbeds
+        var probe = DecodeStepProbe()
 
         // Get code predictor (required for generation)
         guard let codePredictor = talker.codePredictor else {
@@ -1079,6 +1092,7 @@ public class Qwen3TTSModel: Module {
             // Forward through Talker
             let (logits, hiddenStates) = talker(currentInput, cache: cache)
             eval(logits, hiddenStates)
+            probe.afterTalker(logitsDtype: "\(logits.dtype)", hiddenDtype: "\(hiddenStates.dtype)")
 
             // Sample first codebook token
             let nextToken = sampleToken(
@@ -1093,6 +1107,7 @@ public class Qwen3TTSModel: Module {
             )
 
             let tokenValue = Int(nextToken[0, 0].item(Int32.self))
+            probe.afterSample()
 
             // Check for EOS
             if tokenValue == eosTokenId {
@@ -1160,8 +1175,11 @@ public class Qwen3TTSModel: Module {
             }
 
             currentInput = textEmbed + codecEmbed
+            probe.afterCodes(frameCount: generatedTokens.count)
             eval(currentInput)
         }
+
+        probe.finish(frameCount: generatedTokens.count)
 
         guard !generatedCodes.isEmpty else {
             throw Qwen3TTSError.generationFailed("No tokens generated")

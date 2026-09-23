@@ -51,6 +51,13 @@ actor ChapterCache {
         }
     }
 
+    /// 磁盘上的解析结果被整体清掉后必须一起清：否则内存里的旧 Chapter
+    /// 还会带着已失效的 audioURL 被读出来。
+    func removeAll() {
+        storage.removeAll()
+        order.removeAll()
+    }
+
     private func touch(_ id: UUID) {
         if let index = order.firstIndex(of: id) {
             order.remove(at: index)

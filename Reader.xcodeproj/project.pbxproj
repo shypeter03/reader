@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 60;
+	objectVersion = 70;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -46,6 +46,9 @@
 		52221460303EF7D10022E4E3 /* ChapterDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222145F303EF7D10022E4E3 /* ChapterDescriptor.swift */; };
 		52221462303F03B90022E4E3 /* MLXQwenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221461303F03B90022E4E3 /* MLXQwenService.swift */; };
 		5235D15830411F65006B7E3A /* SpeechAudioBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5235D15730411F54006B7E3A /* SpeechAudioBridge.swift */; };
+		523A87DB306382F2006394D9 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 52AA0002304400000012DAD8 /* MLX */; };
+		523A87DC306382F2006394D9 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 52AA0003304400000012DAD8 /* MLXNN */; };
+		523A87DD306382F2006394D9 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 52AA0004304400000012DAD8 /* MLXFast */; };
 		525CEC9E303FA9FC00260A94 /* AIError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CEC9D303FA9FA00260A94 /* AIError.swift */; };
 		525CECA0303FAA6500260A94 /* AIAnalysisResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CEC9F303FAA6300260A94 /* AIAnalysisResult.swift */; };
 		525CECB3303FB21000260A94 /* AITools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CECB2303FB20C00260A94 /* AITools.swift */; };
@@ -72,7 +75,7 @@
 		52C1D7233060000000000003 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7223060000000000003 /* ChapterStore.swift */; };
 		52C1D7253060000000000005 /* RawWebSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7243060000000000005 /* RawWebSocket.swift */; };
 		52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */; };
-		52C1DA0030800000000000A2 /* Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite in Resources */ = {isa = PBXBuildFile; fileRef = 52C1DA0030800000000000A1 /* Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite */; };
+		523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */; };
 		52C1DB013080000000000002 /* Qwen3TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB013080000000000001 /* Qwen3TTSService.swift */; };
 		52C1DB023080000000000002 /* AudioUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB023080000000000001 /* AudioUtils.swift */; };
 		52C1DB033080000000000002 /* CodePredictor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB033080000000000001 /* CodePredictor.swift */; };
@@ -160,7 +163,7 @@
 		52C1D7223060000000000003 /* ChapterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterStore.swift; sourceTree = "<group>"; };
 		52C1D7243060000000000005 /* RawWebSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawWebSocket.swift; sourceTree = "<group>"; };
 		52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-0.6B-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3-0.6B-MLX-4bit"; sourceTree = "<absolute>"; };
-		52C1DA0030800000000000A1 /* Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite"; path = "/Users/suhaiyang/Models/Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite"; sourceTree = "<absolute>"; };
+		523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3TTSCache/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; sourceTree = "<absolute>"; };
 		52C1DB013080000000000001 /* Qwen3TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSService.swift; sourceTree = "<group>"; };
 		52C1DB023080000000000001 /* AudioUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioUtils.swift; sourceTree = "<group>"; };
 		52C1DB033080000000000001 /* CodePredictor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodePredictor.swift; sourceTree = "<group>"; };
@@ -179,6 +182,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				523A87DD306382F2006394D9 /* MLXFast in Frameworks */,
+				523A87DC306382F2006394D9 /* MLXNN in Frameworks */,
+				523A87DB306382F2006394D9 /* MLX in Frameworks */,
 				52942075304328B60012DAD8 /* MLXLLM in Frameworks */,
 				52942071304328B60012DAD8 /* MLXEmbedders in Frameworks */,
 				52942079304328B60012DAD8 /* MLXVLM in Frameworks */,
@@ -235,7 +241,7 @@
 		522213E4303EE4160022E4E3 /* Reader */ = {
 			isa = PBXGroup;
 			children = (
-				52C1DA0030800000000000A1 /* Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite */,
+				523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */,
 				52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */,
 				52221458303EF3EC0022E4E3 /* Import */,
 				52221440303EE7FC0022E4E3 /* View */,
@@ -542,8 +548,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				522213ED303EE4170022E4E3 /* Preview Assets.xcassets in Resources */,
-				52C1DA0030800000000000A2 /* Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite in Resources */,
 				52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */,
+				523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */,
 				522213EA303EE4170022E4E3 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -969,6 +975,14 @@
 				minimumVersion = 0.9.20;
 			};
 		};
+		52AA0001304400000012DAD8 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.31.4;
+			};
+		};
 		52B0C6D2303FD66D0073EED6 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/huggingface/swift-transformers";
@@ -983,14 +997,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 0.9.0;
-			};
-		};
-		52AA0001304400000012DAD8 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift";
-			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 0.31.4;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

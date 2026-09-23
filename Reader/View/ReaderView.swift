@@ -254,6 +254,26 @@ struct ReaderView: View {
                         spacing: 16
                     ) {
 
+                        if chapter.sentences.isEmpty {
+
+                            Text(
+                                "这一章没有可朗读的正文（图片页或空白页）"
+                            )
+                            .font(
+                                .body
+                            )
+                            .foregroundStyle(
+                                .secondary
+                            )
+                            .frame(
+                                maxWidth: .infinity,
+                                alignment: .center
+                            )
+                            .padding(
+                                .top, 40
+                            )
+                        }
+
                         ForEach(
                             chapter.sentences
                         ) { sentence in

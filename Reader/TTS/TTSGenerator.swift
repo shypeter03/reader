@@ -282,6 +282,28 @@ actor TTSGenerator {
 
     // MARK: - Voice Resolution
 
+    /// 作废一句音频：LLM 改了参数后旧 WAV 必须从磁盘消失，否则下一次
+    /// produce 的缓存命中会把它原样取回来，重录等于没发生。
+    func discardAudio(
+        bookID: UUID,
+        chapterID: UUID,
+        sentenceID: UUID
+    ) async {
+        await audioStore.delete(
+            bookID: bookID,
+            chapterID: chapterID,
+            sentenceID: sentenceID
+        )
+    }
+
+    func discardBookAudio(
+        bookID: UUID
+    ) async {
+        await audioStore.deleteBook(
+            bookID: bookID
+        )
+    }
+
     private static func resolveVoiceID(
         sentence: Sentence,
         chapter: Chapter,

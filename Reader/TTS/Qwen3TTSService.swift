@@ -5,10 +5,11 @@
 
 import Foundation
 import MLX
+import MLXNN
 
 /// 基于 swift-qwen3-tts（AtomGradient）原生 Swift 实现的本地 TTS 后端。
-/// 配套模型：Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite
-/// （词表剪枝 + decoder-only fp16 声码器 + 4bit 量化，README 标称 RTF ~0.8x）。
+/// 配套模型：Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit
+/// （官方 12.5Hz 声码器 + 4bit 量化，完整词表）。
 actor Qwen3TTSService: TTSService {
 
     private var model: Qwen3TTSModel?
@@ -19,7 +20,7 @@ actor Qwen3TTSService: TTSService {
 
     /// Bundle 内的蓝色 folder reference 名（需以 folder reference 方式加入工程）。
     private static let bundleResourceName =
-        "Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite"
+        "Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"
 
     /// 与 swift-qwen3-tts demo 一致：让模型自行检测语言。
     private static let language = "auto"
@@ -78,7 +79,7 @@ actor Qwen3TTSService: TTSService {
     private func load() async throws {
         guard !isLoaded else { return }
 
-        print("开始加载 Qwen3-TTS lite 本地语音模型 (swift-qwen3-tts, CustomVoice 4bit)...")
+        print("开始加载 Qwen3-TTS 12Hz 本地语音模型 (swift-qwen3-tts, CustomVoice 4bit)...")
 
         let dir = try Self.resolveModelDirectory()
         print("[TTS] ① 校验模型组件… 通过 (talker + speech_tokenizer decoder)")
@@ -91,10 +92,37 @@ actor Qwen3TTSService: TTSService {
         isLoaded = true
 
         MemoryProbe.log("TTS 加载 后")
+        Self.logRuntimeProfile(loaded)
         print("TTS Ready：\(loaded.ttsModelType)，采样率 \(loaded.sampleRate)Hz，说话人 \(loaded.supportedSpeakers.joined(separator: "/"))（本地离线）")
 
         await warmUp()
         
+    }
+
+    /// 一次性运行时画像（P0-1 诊断）：确认真的走 Metal GPU、内存/缓存上限是多少、
+    /// 权重是否确实为 4bit（uint8 + fp16 scale）而不是退化成 float32。
+    private static func logRuntimeProfile(_ model: Qwen3TTSModel) {
+
+        let device = Device.defaultDevice()
+        let deviceType = device.deviceType.map { "\($0)" } ?? "nil"
+        print(
+            "[Perf] device=\(deviceType) | 内存上限=\(Memory.memoryLimit / 1_048_576)MB "
+                + "缓存上限=\(Memory.cacheLimit / 1_048_576)MB 当前缓存=\(Memory.snapshot().cacheMemory / 1_048_576)MB"
+        )
+
+        var byDtype: [String: (tensors: Int, elements: Int)] = [:]
+        for (_, array) in model.parameters().flattened() {
+            let key = "\(array.dtype)"
+            var entry = byDtype[key] ?? (0, 0)
+            entry.tensors += 1
+            entry.elements += array.size
+            byDtype[key] = entry
+        }
+        let summary = byDtype
+            .sorted { $0.value.elements > $1.value.elements }
+            .map { "\($0.key)×\($0.value.tensors)张量/\($0.value.elements)元素" }
+            .joined(separator: " ")
+        print("[Perf] 权重 dtype 分布：\(summary)")
     }
 
     /// 首次 generate 附带 Metal kernel 编译 / 计算图构建等一次性开销。
@@ -160,7 +188,6 @@ actor Qwen3TTSService: TTSService {
             : 0.5
 
         var accepted: [Float]?
-        var fallback: [Float]?
 
         // 高 temperature 下 talker 偶发漂移：立即 EOS（静音）、语速崩坏、
         // 拖尾或输出与文本无关的语音。校验时长，异常则降温重试一次。
@@ -195,9 +222,6 @@ actor Qwen3TTSService: TTSService {
 
             if silent || tooShort || tooLong {
                 print("[TTS] ⚠️ 时长异常(第\(attempt)次): \(String(format: "%.2f", duration))s / 预期 \(String(format: "%.2f", expectedDuration))s — \(text.prefix(12))")
-                if fallback == nil || abs(duration - expectedDuration) < abs(Self.fallbackDuration(fallback!, sampleRate: sampleRate) - expectedDuration) {
-                    fallback = trimmed
-                }
                 continue
             }
 
@@ -205,15 +229,13 @@ actor Qwen3TTSService: TTSService {
             break
         }
 
-        // 两次都全静音属于严重异常，绝不缓存假音频
-        guard let samples = accepted ?? fallback, !samples.isEmpty else {
+        // 两次都不合格就抛错，绝不落盘「更接近预期的那个」：produce 之后按
+        // sentenceID 命中磁盘缓存，一次残句会被永久复用，用户听到的就是
+        // 「播几个字就结束」，而且再也等不到重录。失败交给调度器重试。
+        guard let samples = accepted else {
             throw LocalTTSError.synthesisFailed(
-                "两次合成均为静音：\(text.prefix(12))"
+                "两次合成均不合格（预期 \(String(format: "%.2f", expectedDuration))s）：\(text.prefix(12))"
             )
-        }
-
-        if accepted == nil {
-            print("[TTS] ⚠️ 两次合成均异常，取更接近预期时长的结果：\(text.prefix(12))")
         }
 
         let wavStart = CFAbsoluteTimeGetCurrent()
@@ -231,10 +253,6 @@ actor Qwen3TTSService: TTSService {
     }
 
     // MARK: - Audio Sanity Helpers
-
-    private static func fallbackDuration(_ samples: [Float], sampleRate: Double) -> Double {
-        Double(samples.count) / sampleRate
-    }
 
     /// 裁掉过长的首尾静音，保留自然呼吸感。
     /// 漂移样本常见 1s+ 的尾部静音，直接听感就是“拖着”。
@@ -327,7 +345,7 @@ enum LocalTTSError: Error, LocalizedError {
         case .incompleteModel(let missing):
             return """
             Qwen3-TTS 模型不完整，无法离线合成语音。缺失：\(missing.joined(separator: "、"))。
-            请在 ~/Models/Qwen3-TTS-0.6B-CustomVoice-4bit-pruned-vocab-lite/ 下放入完整模型仓库（含 speech_tokenizer/model.safetensors），重新构建。
+            请在 ~/Models/Qwen3TTSCache/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit/ 下放入完整模型仓库（含 speech_tokenizer/model.safetensors），重新构建。
             """
         case .synthesisFailed(let reason):
             return "语音合成失败: \(reason)"

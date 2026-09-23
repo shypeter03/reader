@@ -16,6 +16,10 @@ final class ReaderContainer {
 
     private init() {
 
+        // MLX allocator 默认会把整台设备的内存上限都当成可缓存池，8GB 设备上
+        // 光 cached 就能堆到 4G+。在加载任何权重前先把 cacheLimit 压下来。
+        MemoryProbe.configureCacheLimit()
+
         // MARK: - AI Analyzer (Qwen3-0.6B)
 
         let aiService =
@@ -24,7 +28,12 @@ final class ReaderContainer {
         let analyzer =
             ChapterAnalyzer(ai: aiService)
 
-        // MARK: - Local Neural TTS (Qwen3-TTS lite / swift-qwen3-tts)
+        // MARK: - Fast Analyzer（正则，开播即用）
+
+        let fastAnalyzer =
+            FastChapterAnalyzer()
+
+        // MARK: - Local Neural TTS (Qwen3-TTS 12Hz / swift-qwen3-tts)
 
         let ttsService =
             Qwen3TTSService()
@@ -46,6 +55,7 @@ final class ReaderContainer {
         pipeline =
             ReaderPipeline(
                 analyzer: analyzer,
+                fastAnalyzer: fastAnalyzer,
                 generator: generator,
                 chapterStore: chapterStore
             )
