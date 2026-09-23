@@ -74,6 +74,7 @@ actor FastChapterAnalyzer {
         updated.emotionIntensity = analysis.emotionIntensity
         updated.speed = analysis.speed
         updated.pitch = analysis.pitch
+        updated.voiceStrength = analysis.voiceStrength
         updated.analysisStatus = .completed
 
         if analysis.speaker == .character,
@@ -108,6 +109,7 @@ actor FastChapterAnalyzer {
         let emotionIntensity: Double
         let speed: Double
         let pitch: Double
+        let voiceStrength: Double
     }
 
     private func analyzeSentence(_ text: String) -> SentenceAnalysis {
@@ -120,9 +122,10 @@ actor FastChapterAnalyzer {
                 speaker: .narrator,
                 characterName: nil,
                 emotion: .neutral,
-                emotionIntensity: 0.1,
-                speed: 1.0,
-                pitch: 0.0
+                emotionIntensity: Emotion.neutral.defaultIntensity,
+                speed: Emotion.neutral.defaultSpeed,
+                pitch: Emotion.neutral.defaultPitch,
+                voiceStrength: Emotion.neutral.defaultVoiceStrength
             )
         }
 
@@ -193,6 +196,7 @@ actor FastChapterAnalyzer {
         let intensity = detectIntensity(from: text, emotion: emotion)
         let speed = detectSpeed(from: text, emotion: emotion)
         let pitch = detectPitch(from: text, emotion: emotion)
+        let voiceStrength = detectVoiceStrength(from: text, emotion: emotion)
 
         return SentenceAnalysis(
             type: .dialogue,
@@ -201,7 +205,8 @@ actor FastChapterAnalyzer {
             emotion: emotion,
             emotionIntensity: intensity,
             speed: speed,
-            pitch: pitch
+            pitch: pitch,
+            voiceStrength: voiceStrength
         )
     }
 
@@ -213,6 +218,7 @@ actor FastChapterAnalyzer {
         let intensity = detectIntensity(from: text, emotion: emotion)
         let speed = detectSpeed(from: text, emotion: emotion)
         let pitch = detectPitch(from: text, emotion: emotion)
+        let voiceStrength = detectVoiceStrength(from: text, emotion: emotion)
 
         return SentenceAnalysis(
             type: .narration,
@@ -221,7 +227,8 @@ actor FastChapterAnalyzer {
             emotion: emotion,
             emotionIntensity: intensity,
             speed: speed,
-            pitch: pitch
+            pitch: pitch,
+            voiceStrength: voiceStrength
         )
     }
 
@@ -321,29 +328,13 @@ actor FastChapterAnalyzer {
 
     // MARK: - Speed Detection
 
+    /// 以该情绪的整句目标语速为起点，再按标点做极小的调整。
     private func detectSpeed(from text: String, emotion: Emotion) -> Double {
 
-        var speed = 1.0
-
-        switch emotion {
-        case .excited, .tense, .fearful:
-            speed = 1.15
-        case .angry:
-            speed = 1.1
-        case .happy:
-            speed = 1.05
-        case .sad:
-            speed = 0.9
-        case .calm:
-            speed = 0.95
-        case .surprised:
-            speed = 1.1
-        case .neutral:
-            speed = 1.0
-        }
+        var speed = emotion.defaultSpeed
 
         if text.contains("……") || text.contains("...") {
-            speed -= 0.05
+            speed -= 0.03
         }
 
         return max(0.7, min(1.3, speed))
@@ -352,22 +343,21 @@ actor FastChapterAnalyzer {
     // MARK: - Pitch Detection
 
     private func detectPitch(from text: String, emotion: Emotion) -> Double {
+        max(-0.2, min(0.2, emotion.defaultPitch))
+    }
 
-        var pitch = 0.0
+    // MARK: - Voice Strength Detection
 
-        switch emotion {
-        case .happy, .excited, .surprised:
-            pitch = 0.08
-        case .angry, .tense:
-            pitch = 0.05
-        case .sad, .fearful:
-            pitch = -0.05
-        case .calm:
-            pitch = -0.02
-        case .neutral:
-            pitch = 0.0
+    /// 声音力度不跟随情绪强度：克制的情绪照样要中气充足。
+    /// 只有明确的轻声/耳语线索才往下调，并且不越过 AITools 的地板值。
+    private func detectVoiceStrength(from text: String, emotion: Emotion) -> Double {
+
+        var strength = emotion.defaultVoiceStrength
+
+        if containsKeywords(text, ["轻声", "低声", "小声", "耳语", "悄悄", "喃喃"]) {
+            strength -= 0.15
         }
 
-        return max(-0.2, min(0.2, pitch))
+        return max(AITools.voiceStrengthFloor, min(1.0, strength))
     }
 }

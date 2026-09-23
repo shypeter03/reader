@@ -522,7 +522,7 @@ actor ReaderPipeline {
                         updated.audioStatus = old.audioStatus
                         // 播放头之后 LLM 说了算。规则版音频若参数被改，删文件重录：
                         // 不删的话 produce 的磁盘命中会把旧 WAV 原样取回来。
-                        if old.audioURL != nil, Self.affectsAudio(old, updated) {
+                        if old.audioURL != nil, Self.affectsAudio(old, updated, chapter: latest, bookID: job.bookID) {
                             await generator.discardAudio(bookID: job.bookID, chapterID: job.chapterID, sentenceID: old.id)
                             await store.reopenTTS(chapterID: job.chapterID, sentenceIndex: i)
                             updated.audioURL = nil
@@ -579,13 +579,24 @@ actor ReaderPipeline {
         MemoryProbe.log("Scheduler finish \(job.id)")
     }
     /// 标注改动是否会影响合成出来的声音。没影响就别重录：一句要几十秒 GPU
-    /// 时间，无谓重录还会让听感中途换人。pitch 不进 Qwen3-TTS，所以不比它。
-    private static func affectsAudio(_ old: Sentence, _ updated: Sentence) -> Bool {
+    /// 时间，无谓重录还会让听感中途换人。speed / pitch / voiceStrength 现在
+    /// 都会进 CustomVoice 的 instruct，所以都要比。
+    private static func affectsAudio(
+        _ old: Sentence,
+        _ updated: Sentence,
+        chapter: Chapter,
+        bookID: UUID
+    ) -> Bool {
         old.speaker != updated.speaker
             || old.characterID != updated.characterID
             || old.emotion != updated.emotion
             || abs(old.emotionIntensity - updated.emotionIntensity) > 0.05
             || abs(old.speed - updated.speed) > 0.01
+            || abs(old.pitch - updated.pitch) > 0.03
+            || abs(old.voiceStrength - updated.voiceStrength) > 0.05
+            // 说话人也可能换：无名对白走固定男声，命名人物走各自的声音
+            || VoiceManager.resolvedVoice(for: old, in: chapter, bookID: bookID)
+                != VoiceManager.resolvedVoice(for: updated, in: chapter, bookID: bookID)
     }
 
     /// P0：LLM 分析与 TTS 共用同一块 GPU，并发时两边耗时一起恶化。规则标注已经

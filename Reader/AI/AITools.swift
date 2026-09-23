@@ -34,9 +34,9 @@ enum AITools {
 
     只输出 JSON 数组，不要输出解释、Markdown、代码块或其他文字。
 
-    每句话必须输出一个数组，并且每个数组必须恰好包含 7 个元素：
+    每句话必须输出一个数组，并且每个数组必须恰好包含 8 个元素：
 
-    [index,"n"或"d",speaker,emotion,emotionIntensity,speed,pitch]
+    [index,"n"或"d",speaker,emotion,emotionIntensity,speed,pitch,voiceStrength]
 
     ==================================================
     【1. index】
@@ -85,50 +85,47 @@ enum AITools {
 
     "d"
 
+    无法确定 speaker 时，不要改变 n/d 的判断。
+
     ==================================================
     【3. speaker】
     ==================================================
 
-    第三列表示说话人。
+    第三列表示说话人姓名。
 
-    目标是尽可能识别说话人。
-
-    可以根据当前句子中出现的信息判断，例如：
+    只能使用「当前这一句本身」出现的信息来判断，例如：
 
     - “张三说：……”
     - “李四问道：……”
     - “王五喊道：……”
     - “张三：“你来了？””
     - “‘快走！’张三大喊。”
-    - 当前句明确指出某个人正在说话
 
-    如果当前句能够明确确定说话人：
+    符合以上任一形式时，填写该人物姓名。
 
-    填写人物姓名。
+    以下情况一律使用 null：
 
-    人物姓名可以来自当前句子。
+    - 当前句没有出现能确定说话人的文字
+    - 需要对上下文做出推断才能确定说话人
 
-    不要因为没有人物列表就放弃识别。
+    严禁使用以下任何线索来推断 speaker：
 
-    如果当前句是对白，但无法可靠确定说话人：
+    - 上一句或下一句
+    - 对话的交替规律、说话人轮换
+    - 人物关系、人物性格
+    - 故事情节、前后因果
 
-    第三列使用 null。
-
-    不要猜测一个不确定的人物。
-
-    注意：
+    不要猜测 speaker，宁可输出 null。
 
     如果第二列为 "n"，第三列必须为 null。
 
-    如果第二列为 "d"，第三列可以是人物姓名，也可以是 null。
-
     例如：
 
-    [1,"d","张三","angry",0.8,1.1,0.1]
+    [1,"d","张三","angry",0.8,1.08,0.03,0.95]
 
     或者：
 
-    [1,"d",null,"neutral",0.5,1.0,0.0]
+    [1,"d",null,"neutral",0.5,1.0,0.0,0.8]
 
     ==================================================
     【4. emotion】
@@ -151,68 +148,120 @@ enum AITools {
     不要输出其他情绪名称。
 
     ==================================================
-    【5. emotionIntensity】
+    【5. emotionIntensity 与 8. voiceStrength 的区别】
     ==================================================
 
-    表示情绪强度。
+    这是两个互相独立的维度，绝不要用其中一个去推另一个：
 
-    范围：
+    emotionIntensity：情绪有多强。范围 0.0 ~ 1.0
+    - 0.0 ~ 0.2：几乎没有情绪
+    - 0.3 ~ 0.4：轻微
+    - 0.5 ~ 0.6：中等
+    - 0.7 ~ 0.8：明显
+    - 0.9 ~ 1.0：非常强烈
 
-    0.0 ~ 1.0
+    voiceStrength：声音本身有多饱满、有支撑力、有力量。范围 0.0 ~ 1.0
+    - 0.75 ~ 0.85：正常朗读的饱满程度（默认区间）
+    - 0.9 ~ 1.0：愤怒、兴奋等有力度的表达
+    - 0.6 ~ 0.75：只有文本明确要求轻声、耳语时才用
 
-    必须是 JSON number，不能加引号。
+    情绪弱不等于声音虚。悲伤、平静、克制都只是语气不同，
+    声音依然必须中气充足、有支撑。
 
-    参考：
+    例如一句很悲伤的话可以是：
 
-    0.0 ~ 0.2：几乎没有情绪
-    0.3 ~ 0.4：轻微
-    0.5 ~ 0.6：中等
-    0.7 ~ 0.8：明显
-    0.9 ~ 1.0：非常强烈
+    emotion = sad, emotionIntensity = 0.8, voiceStrength = 0.85
+
+    绝对不要输出：
+
+    emotion = sad, emotionIntensity = 0.8, voiceStrength = 0.2
+
+    按情绪推荐的 voiceStrength（可在此上下小幅调整，不要低于 0.6）：
+
+    neutral: 0.80
+    calm: 0.80
+    sad: 0.80
+    fearful: 0.75
+    happy: 0.85
+    tense: 0.85
+    surprised: 0.90
+    excited: 0.90
+    angry: 0.95
+
+    两个字段都必须是 JSON number，不能加引号。
 
     ==================================================
     【6. speed】
     ==================================================
 
-    表示 TTS 语速。
+    speed 是「整句话」的目标语速，范围 0.7 ~ 1.3，必须是 JSON number。
 
-    范围：
+    - 0.7 ~ 0.85：非常慢
+    - 0.86 ~ 0.95：偏慢
+    - 0.96 ~ 1.05：正常
+    - 1.06 ~ 1.15：偏快
+    - 1.16 ~ 1.3：非常快
 
-    0.7 ~ 1.3
+    按情绪推荐：
 
-    必须是 JSON number。
+    neutral: 1.00
+    calm: 0.90 ~ 0.95
+    sad: 0.88 ~ 0.95
+    fearful: 0.95 ~ 1.05
+    happy: 1.03 ~ 1.10
+    angry: 1.03 ~ 1.12
+    surprised: 1.03 ~ 1.12
+    tense: 1.03 ~ 1.10
+    excited: 1.08 ~ 1.18
 
-    参考：
-
-    0.7 ~ 0.85：非常慢
-    0.86 ~ 0.95：偏慢
-    0.96 ~ 1.05：正常
-    1.06 ~ 1.15：偏快
-    1.16 ~ 1.3：非常快
-
-    根据句子的表达方式和情绪判断。
+    speed 描述的是整句的均匀语速，不存在「前半句快后半句慢」。
 
     ==================================================
     【7. pitch】
     ==================================================
 
-    表示 TTS 音调。
+    pitch 是「整句话」的目标音调偏移，范围 -0.2 ~ 0.2，必须是 JSON number。
 
-    范围：
+    - -0.2 ~ -0.1：明显低沉
+    - -0.1 ~ -0.03：略低
+    - -0.03 ~ 0.03：正常
+    - 0.03 ~ 0.1：略高
+    - 0.1 ~ 0.2：明显偏高
 
-    -0.2 ~ 0.2
+    按情绪推荐（不要给极端值）：
 
-    必须是 JSON number。
+    neutral: 0.00
+    calm: -0.03
+    sad: -0.05 ~ -0.10
+    angry: 0.00 ~ +0.05
+    tense: 0.00 ~ +0.05
+    fearful: -0.02 ~ +0.05
+    happy: +0.05 ~ +0.10
+    surprised: +0.08 ~ +0.15
+    excited: +0.08 ~ +0.15
 
-    参考：
+    pitch 低只代表音调低，不代表音量小。
 
-    -0.2 ~ -0.1：明显低沉
-    -0.1 ~ -0.03：略低
-    -0.03 ~ 0.03：正常
-    0.03 ~ 0.1：略高
-    0.1 ~ 0.2：明显偏高
+    ==================================================
+    【语音表现要求：这一条最重要】
+    ==================================================
 
-    根据句子的情绪和表达方式判断。
+    你要输出的这些参数会被合成成真人朗读。历史音频最常见的缺陷是：
+
+    前半句正常饱满，后半句越来越轻、越来越慢、越来越虚，
+    最后几个字几乎听不清（句尾泄气、中途压低声音）。
+
+    为避免这种情况，参数必须体现「整句一致」：
+
+    1. 从句首到句尾保持基本稳定的音量、气息、声音力度、语速、音调。
+    2. 中气充足、声音饱满、有支撑力。
+    3. 不允许中途突然降低音量、压低声音、放慢语速、改变音调或改变说话方式。
+    4. 不允许句尾泄气、突然变轻、突然变慢、音量骤降、声音发虚。
+    5. sad / calm / tense / fearful 等情绪不得通过降低 voiceStrength 来表达。
+    6. 情绪可以自然表达，但整句的情绪强度必须连贯，变化平滑。
+    7. speed、pitch、voiceStrength 都是整句目标值，不是局部值。
+
+    换句话说：宁可情绪略克制，也不要靠「越读越轻」来表现情绪。
 
     ==================================================
     【默认值】
@@ -222,55 +271,49 @@ enum AITools {
 
     "neutral",0.5
 
-    如果无法可靠判断语速：
+    如果无法可靠判断语速：1.0
 
-    1.0
+    如果无法可靠判断音调：0.0
 
-    如果无法可靠判断音调：
+    如果无法可靠判断声音力度：0.8
 
-    0.0
+    如果是对白但无法确定说话人："d",null
 
-    如果是对白但无法确定说话人：
-
-    "d",null
-
-    如果是旁白：
-
-    "n",null
+    如果是旁白："n",null
 
     例如：
 
-    [5,"n",null,"neutral",0.5,1.0,0.0]
+    [5,"n",null,"neutral",0.5,1.0,0.0,0.8]
 
     或者：
 
-    [6,"d",null,"neutral",0.5,1.0,0.0]
+    [6,"d",null,"neutral",0.5,1.0,0.0,0.8]
 
     ==================================================
     【重要原则】
     ==================================================
 
-    1. 每句话都必须返回完整的 7 个字段。
+    1. 每句话都必须返回完整的 8 个字段，顺序不能变。
 
-    2. 不要遗漏 speaker、emotion、emotionIntensity、speed、pitch。
+    2. 不要遗漏 speaker、emotion、emotionIntensity、speed、pitch、voiceStrength。
 
-    3. speaker 尽可能识别，但不确定时使用 null。
+    3. speaker 只用当前句自身的线索，不确定时用 null，绝不编造人物。
 
-    4. 不要为了确定 speaker 而编造人物。
+    4. emotion、speed、pitch、voiceStrength 即使无法精确判断，也必须给出合法默认值。
 
-    5. emotion、speed、pitch 即使无法精确判断，也必须给出合法默认值。
-
-    6. 不要把数字合并成字符串。
+    5. 六个数值字段必须是 JSON number，不要加引号、不要合并成字符串。
 
     错误：
 
-    [1,"d","张三","happy","0.8,1.1,0.1"]
+    [1,"d","张三","happy","0.8,1.1,0.1,0.85"]
 
     正确：
 
-    [1,"d","张三","happy",0.8,1.1,0.1]
+    [1,"d","张三","happy",0.8,1.1,0.1,0.85]
 
-    7. 最终必须输出完整 JSON。
+    6. 必须是合法 JSON：不允许 Markdown、```json、解释文字。
+
+    7. 必须恰好输出 \(count) 条，index 按输入顺序。
 
     ==================================================
     【输入】
@@ -384,10 +427,10 @@ enum AITools {
                     issues.append("对白却标 narrator→character")
                 }
             } else {
-                // 对白缺少人物名：无法定位说话人，整体回退为旁白朗读。
-                issues.append("对白缺 characterName→回退旁白")
-                type = .narration
-                speaker = .narrator
+                // 对白没写出说话人：仍然是对白（不能因为不知道是谁就改读成旁白），
+                // 交给无角色的固定男声朗读。旁白是旁白、无名说话人是另一种声音，
+                // 两条路径（正则/LLM）必须落到同一个声音上。
+                speaker = .character
                 characterName = nil
             }
         }
@@ -414,12 +457,25 @@ enum AITools {
         )
         let speed = validatedDouble(
             dict, keys: ["speed"],
-            fallback: 1.0, min: 0.7, max: 1.3, name: "speed", issues: &issues
+            fallback: emotion.defaultSpeed, min: 0.7, max: 1.3, name: "speed", issues: &issues
         )
         let pitch = validatedDouble(
             dict, keys: ["pitch"],
-            fallback: 0.0, min: -0.2, max: 0.2, name: "pitch", issues: &issues
+            fallback: emotion.defaultPitch, min: -0.2, max: 0.2, name: "pitch", issues: &issues
         )
+
+        // voiceStrength 与 emotionIntensity 独立：模型常把「悲伤/紧张」顺手写成
+        // 0.2 这类气声值，听感就是后半句越读越轻、句尾泄气。低于地板时按该情绪的
+        // 推荐值抬回来，绝不把虚弱的力度原样送进 TTS。
+        var voiceStrength = validatedDouble(
+            dict, keys: ["voiceStrength", "strength", "voicePower"],
+            fallback: emotion.defaultVoiceStrength, min: 0, max: 1, name: "voiceStrength", issues: &issues
+        )
+        if voiceStrength < Self.voiceStrengthFloor {
+            let lifted = max(Self.voiceStrengthFloor, emotion.defaultVoiceStrength)
+            issues.append("voiceStrength 过低(\(voiceStrength))→\(lifted)，情绪弱不等于声音虚")
+            voiceStrength = lifted
+        }
 
         return (
             AIAnalyzedSentence(
@@ -430,11 +486,15 @@ enum AITools {
                 emotion: emotion,
                 emotionIntensity: emotionIntensity,
                 speed: speed,
-                pitch: pitch
+                pitch: pitch,
+                voiceStrength: voiceStrength
             ),
             issues
         )
     }
+
+    /// 送进 TTS 的最低声音力度。低于此值基本就是气声/句尾泄气。
+    static let voiceStrengthFloor: Double = 0.6
 
     // MARK: - Validation Helpers
 
@@ -543,9 +603,10 @@ enum AITools {
         return nil
     }
 
-    /// [index,type,characterName,emotion,emotionIntensity,speed,pitch] → 命名字段 dict。
-    /// 模型常把末尾数值塞进一个带引号的串（"0.5,1.0,0.0"）：先展平回独立
-    /// 数字列，保证 7 列对齐。元素不足时对应字段缺失，由 makeSentence 记问题。
+    /// [index,type,characterName,emotion,emotionIntensity,speed,pitch,voiceStrength]
+    /// → 命名字段 dict。
+    /// 模型常把末尾数值塞进一个带引号的串（"0.5,1.0,0.0,0.8"）：先展平回独立
+    /// 数字列，保证 8 列对齐。元素不足时对应字段缺失，由 makeSentence 记问题。
     private static func positionalDict(from arr: [Any]) -> [String: Any]? {
         var flat: [Any] = []
         for element in arr {
@@ -559,7 +620,7 @@ enum AITools {
         }
         let keys = [
             "index", "type", "characterName",
-            "emotion", "emotionIntensity", "speed", "pitch",
+            "emotion", "emotionIntensity", "speed", "pitch", "voiceStrength",
         ]
         var dict = [String: Any]()
         for (i, key) in keys.enumerated() where i < flat.count {
@@ -629,7 +690,7 @@ enum AITools {
         // 若断在字符串中间，JSON 仍不完整会自然失败、放弃该行。
         if let s = rowStart, s < chars.count {
             let fragment = String(chars[s...])
-            for suffix in ["]", ",0]"] {
+            for suffix in ["]", ",0.8]"] {
                 if let data = (fragment + suffix).data(using: .utf8),
                    let arr = try? JSONSerialization.jsonObject(with: data) as? [Any],
                    let dict = positionalDict(from: arr) {

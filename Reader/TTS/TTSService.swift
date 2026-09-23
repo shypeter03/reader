@@ -15,6 +15,7 @@ protocol TTSService: Sendable {
         emotion: Emotion,
         intensity: Double,
         speed: Double,
-        pitch: Double
+        pitch: Double,
+        voiceStrength: Double
     ) async throws -> Data
 }

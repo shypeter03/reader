@@ -298,6 +298,11 @@ actor ChapterAnalyzer {
             updated.emotionIntensity = clamp(analysis.emotionIntensity, min: 0, max: 1)
             updated.speed = clamp(analysis.speed, min: 0.7, max: 1.3)
             updated.pitch = clamp(analysis.pitch, min: -0.2, max: 0.2)
+            updated.voiceStrength = clamp(
+                analysis.voiceStrength,
+                min: AITools.voiceStrengthFloor,
+                max: 1
+            )
 
             chapter.sentences[offset] = updated
         }

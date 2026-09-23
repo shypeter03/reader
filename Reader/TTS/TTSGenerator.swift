@@ -12,12 +12,18 @@ actor TTSGenerator {
 
     private let audioStore: AudioStore
 
+    /// 磁盘缓存的后端子目录（如 `kokoro`）。nil = 沿用原有平铺路径，
+    /// 也就是 Qwen3-TTS 的既有缓存位置和格式一字不改。
+    private let audioNamespace: String?
+
     init(
         tts: TTSService,
-        audioStore: AudioStore
+        audioStore: AudioStore,
+        audioNamespace: String? = nil
     ) {
         self.tts = tts
         self.audioStore = audioStore
+        self.audioNamespace = audioNamespace
     }
 
     // MARK: - Generate (full chapter)
@@ -62,6 +68,10 @@ actor TTSGenerator {
         var chapter = chapter
 
         var startTime = CFAbsoluteTimeGetCurrent()
+        
+        
+        // 在 for 循环外声明一个数组，用来收集每次的 sentence
+        var processedSentences: [Sentence] = []
 
         for offset in range {
 
@@ -83,8 +93,10 @@ actor TTSGenerator {
                         chapter: chapter,
                         bookID: bookID,
                         tts: tts,
-                        audioStore: audioStore
+                        audioStore: audioStore,
+                        audioNamespace: audioNamespace
                     )
+                processedSentences.append(sentence)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -97,6 +109,13 @@ actor TTSGenerator {
             let elapsedMs = (endTime - startTime) * 1000
             MemoryProbe.log("Sentence \(sentence.index) TTS 后,耗时：\(String(format: "%.2f", elapsedMs)) ms")
         }
+        // 循环结束后统一打印
+        print("====================看看输入的sentence对不对================================")
+        print("处理的句子总数：\(processedSentences.count)")
+        for s in processedSentences {
+            print("Sentence index: \(s.index), text: \(s.text)")
+        }
+        print("=========================================================================")
 
         return chapter
     }
@@ -115,7 +134,8 @@ actor TTSGenerator {
             chapter: updated,
             bookID: bookID,
             tts: tts,
-            audioStore: audioStore
+            audioStore: audioStore,
+            audioNamespace: audioNamespace
         )
         updated.sentences[sentenceIndex].audioStatus = .completed
         return updated
@@ -133,6 +153,7 @@ actor TTSGenerator {
 
         let tts = self.tts
         let audioStore = self.audioStore
+        let audioNamespace = self.audioNamespace
 
         return AsyncThrowingStream { continuation in
 
@@ -164,7 +185,8 @@ actor TTSGenerator {
                                 chapter: chapter,
                                 bookID: bookID,
                                 tts: tts,
-                                audioStore: audioStore
+                                audioStore: audioStore,
+                                audioNamespace: audioNamespace
                             )
 
                         index += 1
@@ -211,7 +233,8 @@ actor TTSGenerator {
             chapter: chapter,
             bookID: bookID,
             tts: tts,
-            audioStore: audioStore
+            audioStore: audioStore,
+            audioNamespace: audioNamespace
         )
     }
 
@@ -221,13 +244,15 @@ actor TTSGenerator {
         chapter: Chapter,
         bookID: UUID,
         tts: TTSService,
-        audioStore: AudioStore
+        audioStore: AudioStore,
+        audioNamespace: String?
     ) async throws -> Sentence {
 
         if let existing = await audioStore.load(
             bookID: bookID,
             chapterID: chapter.id,
-            sentenceID: sentence.id
+            sentenceID: sentence.id,
+            backendSubdirectory: audioNamespace
         ) {
 
             var reused = sentence
@@ -254,7 +279,8 @@ actor TTSGenerator {
                 emotion: sentence.emotion,
                 intensity: sentence.emotionIntensity,
                 speed: sentence.speed,
-                pitch: sentence.pitch
+                pitch: sentence.pitch,
+                voiceStrength: sentence.voiceStrength
             )
 
         let saveStart = CFAbsoluteTimeGetCurrent()
@@ -264,7 +290,8 @@ actor TTSGenerator {
                 data: audioData,
                 bookID: bookID,
                 chapterID: chapter.id,
-                sentenceID: sentence.id
+                sentenceID: sentence.id,
+                backendSubdirectory: audioNamespace
             )
 
         let duration =
@@ -292,7 +319,8 @@ actor TTSGenerator {
         await audioStore.delete(
             bookID: bookID,
             chapterID: chapterID,
-            sentenceID: sentenceID
+            sentenceID: sentenceID,
+            backendSubdirectory: audioNamespace
         )
     }
 
@@ -304,7 +332,7 @@ actor TTSGenerator {
         )
     }
 
-    private static func resolveVoiceID(
+    nonisolated static func resolveVoiceID(
         sentence: Sentence,
         chapter: Chapter,
         bookID: UUID
@@ -316,13 +344,13 @@ actor TTSGenerator {
         }
 
         guard let characterID = sentence.characterID else {
-            return VoiceManager.fallbackVoice()
+            return VoiceManager.unnamedVoice()
         }
 
         guard let character = chapter.characters.first(
             where: { $0.id == characterID }
         ) else {
-            return VoiceManager.fallbackVoice()
+            return VoiceManager.unnamedVoice()
         }
 
         if let existing = character.voiceID,
@@ -358,6 +386,14 @@ actor TTSGenerator {
     func unloadModel() async {
         if let mlxService = tts as? Qwen3TTSService {
             await mlxService.unload()
+        }
+        if let kokoroService = tts as? SherpaKokoroTTSService {
+            await kokoroService.unload()
+        }
+        // 降级链会把真正的后端包在里层：只按具体类型转型的话，
+        // 走 Kokoro+Edge 这条路时一个模型都卸不掉，内存白放着。
+        if let fallbackService = tts as? FallbackTTSService {
+            await fallbackService.unloadAll()
         }
     }
 }

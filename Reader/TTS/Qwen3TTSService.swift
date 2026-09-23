@@ -25,6 +25,24 @@ actor Qwen3TTSService: TTSService {
     /// 与 swift-qwen3-tts demo 一致：让模型自行检测语言。
     private static let language = "auto"
 
+    /// Reader 是短句朗读，要的是稳定而不是多样：上游默认
+    /// temperature 0.9 / topK 50 / topP 1.0 更容易漂到「越读越虚」。
+    private static let temperature: Float = 0.7
+    private static let topK = 40
+    private static let topP: Float = 0.9
+    private static let repetitionPenalty: Float = 1.05
+
+    /// 帧数上限（codec 12.5Hz）：按文本长度给预算，长句留够余量即可。
+    /// 固定 2048 只会让漂移样本在「已经说完」之后继续白烧 GPU。
+    private static func maxTokens(for text: String) -> Int {
+        switch text.count {
+        case ..<31: return 512
+        case ..<101: return 768
+        case ..<201: return 1024
+        default: return 1536
+        }
+    }
+
     // MARK: - Model Directory Resolution
 
     /// fromPretrained 只读取目录（tokenizer.json 已随仓库提供），bundle 只读
@@ -138,6 +156,10 @@ actor Qwen3TTSService: TTSService {
                 speaker: VoiceManager.narratorVoice(),
                 instruct: nil,
                 language: Self.language,
+                temperature: Self.temperature,
+                topK: Self.topK,
+                topP: Self.topP,
+                repetitionPenalty: Self.repetitionPenalty,
                 maxTokens: 75
             )
         } catch {
@@ -162,7 +184,8 @@ actor Qwen3TTSService: TTSService {
         emotion: Emotion,
         intensity: Double,
         speed: Double,
-        pitch: Double
+        pitch: Double,
+        voiceStrength: Double
     ) async throws -> Data {
 
         if !isLoaded {
@@ -173,11 +196,20 @@ actor Qwen3TTSService: TTSService {
             throw LocalTTSError.modelNotLoaded
         }
 
-        let style = VoiceManager.stylePrompt(
+        var style = VoiceManager.stylePrompt(
             emotion: emotion,
             intensity: intensity,
-            speed: speed
+            speed: speed,
+            pitch: pitch,
+            voiceStrength: voiceStrength
         )
+
+        if VoiceManager.isUnnamedVoice(voiceID) {
+            style += "；\(VoiceManager.clarityRule)"
+        }
+
+        let frameBudget = Self.maxTokens(for: text)
+        print("[TTS] instruct(\(style.count)字) 帧预算=\(frameBudget)：\(style.prefix(40))")
 
         let sampleRate = Double(model.sampleRate)
 
@@ -200,8 +232,11 @@ actor Qwen3TTSService: TTSService {
                 speaker: voiceID,
                 instruct: style.isEmpty ? nil : style,
                 language: Self.language,
-                temperature: attempt == 2 ? 0.6 : 0.9,
-                maxTokens: 2048
+                temperature: attempt == 2 ? 0.6 : Self.temperature,
+                topK: Self.topK,
+                topP: Self.topP,
+                repetitionPenalty: Self.repetitionPenalty,
+                maxTokens: frameBudget
             )
 
             eval(audio)

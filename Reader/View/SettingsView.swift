@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import SherpaKokoroKit
 
 struct SettingsView: View {
 
@@ -33,6 +34,12 @@ struct SettingsView: View {
         "autoScroll"
     )
     private var autoScroll = true
+
+    /// 键必须与 `TTSEngineType.storageKey` 一致（@AppStorage 只接受字面量）。
+    @AppStorage(
+        "ttsEngineType"
+    )
+    private var ttsEngineRaw: String = TTSEngineType.sherpaKokoro.rawValue
 
     var body: some View {
 
@@ -95,7 +102,40 @@ private extension SettingsView {
                 isOn:
                     $emotionEnhancement
             )
+
+            Picker(
+                "语音合成后端",
+                selection: $ttsEngineRaw
+            ) {
+                ForEach(
+                    TTSEngineType.allCases,
+                    id: \.rawValue
+                ) { engine in
+                    Text(
+                        engine.displayName
+                    )
+                    .tag(engine.rawValue)
+                }
+            }
+
+            Text(
+                kokoroModelStatusText
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
         }
+    }
+
+    /// 只在选了 Kokoro 时才提示模型是否就位；默认后端不打扰。
+    private var kokoroModelStatusText: String {
+        guard ttsEngineRaw == TTSEngineType.sherpaKokoro.rawValue else {
+            return "切换后端需重启 App 生效。"
+        }
+        if let dir = SherpaKokoroTTSService.modelDirectoryIfAvailable() {
+            return "切换后端需重启 App 生效。已找到 Kokoro 模型：\(dir)"
+        }
+        return "切换后端需重启 App 生效。未找到 Kokoro 模型：权重应由 folder reference 在 build 时拷进 App，"
+            + "或把 \(KokoroModelLocator.preferredDirectoryName) 放到 \(KokoroModelLocator.externalDirectoryNameHint) 后重启。"
     }
 }
 

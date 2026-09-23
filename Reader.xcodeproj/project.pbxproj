@@ -24,6 +24,10 @@
 		5222142D303EE68B0022E4E3 /* AIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222142C303EE68B0022E4E3 /* AIService.swift */; };
 		5222142F303EE6AB0022E4E3 /* ChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222142E303EE6AB0022E4E3 /* ChapterAnalyzer.swift */; };
 		52221432303EE6D40022E4E3 /* TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221431303EE6D40022E4E3 /* TTSService.swift */; };
+		52C1EC023090000000000001 /* TTSEngineType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC013090000000000001 /* TTSEngineType.swift */; };
+		52C1EC023090000000000002 /* KokoroVoiceMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC013090000000000002 /* KokoroVoiceMap.swift */; };
+		52C1EC023090000000000003 /* SherpaKokoroTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC013090000000000003 /* SherpaKokoroTTSService.swift */; };
+		52C1EC023090000000000004 /* KokoroProcessMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC013090000000000004 /* KokoroProcessMemory.swift */; };
 		52221434303EE6E40022E4E3 /* AudioSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221433303EE6E40022E4E3 /* AudioSegment.swift */; };
 		52221437303EE7020022E4E3 /* AudioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221436303EE7020022E4E3 /* AudioStore.swift */; };
 		52221439303EE7160022E4E3 /* TTSGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221438303EE7160022E4E3 /* TTSGenerator.swift */; };
@@ -72,10 +76,12 @@
 		52C1D7133051000000000003 /* BookStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7123051000000000003 /* BookStore.swift */; };
 		52C1D7153051000000000005 /* FastChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7143051000000000005 /* FastChapterAnalyzer.swift */; };
 		52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7203060000000000001 /* EdgeTTSService.swift */; };
+		52C1EC073090000000000002 /* FallbackTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC073090000000000001 /* FallbackTTSService.swift */; };
 		52C1D7233060000000000003 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7223060000000000003 /* ChapterStore.swift */; };
 		52C1D7253060000000000005 /* RawWebSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7243060000000000005 /* RawWebSocket.swift */; };
 		52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */; };
 		523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */; };
+		52C1EC063090000000000002 /* kokoro-int8-multi-lang-v1_1 in Resources */ = {isa = PBXBuildFile; fileRef = 52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */; };
 		52C1DB013080000000000002 /* Qwen3TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB013080000000000001 /* Qwen3TTSService.swift */; };
 		52C1DB023080000000000002 /* AudioUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB023080000000000001 /* AudioUtils.swift */; };
 		52C1DB033080000000000002 /* CodePredictor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB033080000000000001 /* CodePredictor.swift */; };
@@ -127,6 +133,10 @@
 		5222142C303EE68B0022E4E3 /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
 		5222142E303EE6AB0022E4E3 /* ChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterAnalyzer.swift; sourceTree = "<group>"; };
 		52221431303EE6D40022E4E3 /* TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSService.swift; sourceTree = "<group>"; };
+		52C1EC013090000000000001 /* TTSEngineType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSEngineType.swift; sourceTree = "<group>"; };
+		52C1EC013090000000000002 /* KokoroVoiceMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroVoiceMap.swift; sourceTree = "<group>"; };
+		52C1EC013090000000000003 /* SherpaKokoroTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SherpaKokoroTTSService.swift; sourceTree = "<group>"; };
+		52C1EC013090000000000004 /* KokoroProcessMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroProcessMemory.swift; sourceTree = "<group>"; };
 		52221433303EE6E40022E4E3 /* AudioSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSegment.swift; sourceTree = "<group>"; };
 		52221436303EE7020022E4E3 /* AudioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioStore.swift; sourceTree = "<group>"; };
 		52221438303EE7160022E4E3 /* TTSGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSGenerator.swift; sourceTree = "<group>"; };
@@ -160,10 +170,12 @@
 		52C1D7123051000000000003 /* BookStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookStore.swift; sourceTree = "<group>"; };
 		52C1D7143051000000000005 /* FastChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FastChapterAnalyzer.swift; sourceTree = "<group>"; };
 		52C1D7203060000000000001 /* EdgeTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeTTSService.swift; sourceTree = "<group>"; };
+		52C1EC073090000000000001 /* FallbackTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FallbackTTSService.swift; sourceTree = "<group>"; };
 		52C1D7223060000000000003 /* ChapterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterStore.swift; sourceTree = "<group>"; };
 		52C1D7243060000000000005 /* RawWebSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawWebSocket.swift; sourceTree = "<group>"; };
 		52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-0.6B-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3-0.6B-MLX-4bit"; sourceTree = "<absolute>"; };
 		523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3TTSCache/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; sourceTree = "<absolute>"; };
+		52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "kokoro-int8-multi-lang-v1_1"; path = "/Users/suhaiyang/Models/kokoro-int8-multi-lang-v1_1"; sourceTree = "<absolute>"; };
 		52C1DB013080000000000001 /* Qwen3TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSService.swift; sourceTree = "<group>"; };
 		52C1DB023080000000000001 /* AudioUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioUtils.swift; sourceTree = "<group>"; };
 		52C1DB033080000000000001 /* CodePredictor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodePredictor.swift; sourceTree = "<group>"; };
@@ -243,6 +255,7 @@
 			children = (
 				523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */,
 				52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */,
+				52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */,
 				52221458303EF3EC0022E4E3 /* Import */,
 				52221440303EE7FC0022E4E3 /* View */,
 				5222143D303EE7540022E4E3 /* Core */,
@@ -332,14 +345,27 @@
 			children = (
 				52C1DB013080000000000001 /* Qwen3TTSService.swift */,
 				52C1D7203060000000000001 /* EdgeTTSService.swift */,
+				52C1EC073090000000000001 /* FallbackTTSService.swift */,
 				52C1D7243060000000000005 /* RawWebSocket.swift */,
 				5235D15730411F54006B7E3A /* SpeechAudioBridge.swift */,
 				52B0C6DC303FDDBD0073EED6 /* SystemTTSService.swift */,
 				52221431303EE6D40022E4E3 /* TTSService.swift */,
 				52221438303EE7160022E4E3 /* TTSGenerator.swift */,
 				52C1D7003050000000000001 /* VoiceManager.swift */,
+				52C1EC033090000000000001 /* SherpaKokoro */,
 			);
 			path = TTS;
+			sourceTree = "<group>";
+		};
+		52C1EC033090000000000001 /* SherpaKokoro */ = {
+			isa = PBXGroup;
+			children = (
+				52C1EC013090000000000001 /* TTSEngineType.swift */,
+				52C1EC013090000000000002 /* KokoroVoiceMap.swift */,
+				52C1EC013090000000000003 /* SherpaKokoroTTSService.swift */,
+				52C1EC013090000000000004 /* KokoroProcessMemory.swift */,
+			);
+			path = SherpaKokoro;
 			sourceTree = "<group>";
 		};
 		52221435303EE6F10022E4E3 /* Storage */ = {
@@ -437,6 +463,7 @@
 			name = Reader;
 			packageProductDependencies = (
 				52221454303EF36B0022E4E3 /* ZIPFoundation */,
+				52C1EC053090000000000001 /* SherpaKokoroKit */,
 				52B0C6D3303FD66D0073EED6 /* Hub */,
 				52B0C6D5303FD66D0073EED6 /* Tokenizers */,
 				52B0C6D7303FD66D0073EED6 /* Transformers */,
@@ -529,6 +556,7 @@
 				52B0C6D2303FD66D0073EED6 /* XCRemoteSwiftPackageReference "swift-transformers" */,
 				52B0C6D9303FD6AA0073EED6 /* XCRemoteSwiftPackageReference "swift-huggingface" */,
 				5294206B304328B60012DAD8 /* XCLocalSwiftPackageReference "../../lib/mlx-swift-lm" */,
+				52C1EC043090000000000001 /* XCLocalSwiftPackageReference "Packages/SherpaKokoroKit" */,
 				52AA0001304400000012DAD8 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 			);
 			productRefGroup = 522213E3303EE4160022E4E3 /* Products */;
@@ -550,6 +578,7 @@
 				522213ED303EE4170022E4E3 /* Preview Assets.xcassets in Resources */,
 				52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */,
 				523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */,
+				52C1EC063090000000000002 /* kokoro-int8-multi-lang-v1_1 in Resources */,
 				522213EA303EE4170022E4E3 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -605,6 +634,7 @@
 				52C1D7133051000000000003 /* BookStore.swift in Sources */,
 				52C1D7153051000000000005 /* FastChapterAnalyzer.swift in Sources */,
 				52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */,
+				52C1EC073090000000000002 /* FallbackTTSService.swift in Sources */,
 				52C1DB013080000000000002 /* Qwen3TTSService.swift in Sources */,
 				52C1DB023080000000000002 /* AudioUtils.swift in Sources */,
 				52C1DB033080000000000002 /* CodePredictor.swift in Sources */,
@@ -620,6 +650,10 @@
 				52C1D7233060000000000003 /* ChapterStore.swift in Sources */,
 				5222143F303EE7610022E4E3 /* ReaderPipeline.swift in Sources */,
 				52221432303EE6D40022E4E3 /* TTSService.swift in Sources */,
+				52C1EC023090000000000001 /* TTSEngineType.swift in Sources */,
+				52C1EC023090000000000002 /* KokoroVoiceMap.swift in Sources */,
+				52C1EC023090000000000003 /* SherpaKokoroTTSService.swift in Sources */,
+				52C1EC023090000000000004 /* KokoroProcessMemory.swift in Sources */,
 				522213E6303EE4160022E4E3 /* ReaderApp.swift in Sources */,
 				52221425303EE6040022E4E3 /* BookParing.swift in Sources */,
 				5222145A303EF3FF0022E4E3 /* HTMLExtractor.swift in Sources */,
@@ -964,6 +998,10 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "../../lib/mlx-swift-lm";
 		};
+		52C1EC043090000000000001 /* XCLocalSwiftPackageReference "Packages/SherpaKokoroKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/SherpaKokoroKit;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -1006,6 +1044,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 52221453303EF3430022E4E3 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
 			productName = ZIPFoundation;
+		};
+		52C1EC053090000000000001 /* SherpaKokoroKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 52C1EC043090000000000001 /* XCLocalSwiftPackageReference "Packages/SherpaKokoroKit" */;
+			productName = SherpaKokoroKit;
 		};
 		5294206C304328B60012DAD8 /* BenchmarkHelpers */ = {
 			isa = XCSwiftPackageProductDependency;

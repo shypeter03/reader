@@ -19,7 +19,11 @@ DerivedData/
 
 # Swift Package Manager
 .build/
-Packages/
+# 本地下拉的包目录默认不入库（体积/机器相关）。
+# SherpaKokoroKit 是**手写源码**，必须能进版本库；注意 `.build/` 已被上面的规则排除，
+# 所以放行这个目录不会把 1.3G 的解析产物带进来。
+Packages/*
+!Packages/SherpaKokoroKit/
 Package.pins
 
 # 本地模型二进制（体积巨大，改由外部下载，不入版本库）
@@ -27,8 +31,9 @@ Reader/SparkTTSCache/
 Reader/Qwen3TTSCache/
 Reader/Qwen3-0.6B-MLX-4bit/
 
-# Models
-Models/
+# Models（仓库根目录下的模型下载目录；`Reader/Models/` 是 Swift 源码，不能被排除，
+# 模型权重另有 *.safetensors/*.bin 等规则兜底）
+/Models/
 *.safetensors
 *.bin
 *.gguf

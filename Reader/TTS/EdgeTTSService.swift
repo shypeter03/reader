@@ -45,8 +45,13 @@ actor EdgeTTSService: TTSService {
         emotion: Emotion,
         intensity: Double,
         speed: Double,
-        pitch: Double
+        pitch: Double,
+        voiceStrength: Double
     ) async throws -> Data {
+
+        // Edge 的 SSML 没有「声音饱满度」这一维，volume/prosody 越低越虚，
+        // 用它只会复刻我们要治的那个毛病，所以这里只接住参数不使用。
+        _ = voiceStrength
 
         let voice = resolveVoice(voiceID)
 

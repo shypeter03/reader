@@ -32,17 +32,21 @@ actor AudioStore {
         )
     }
 
+    /// - Parameter backendSubdirectory: 不同 TTS 后端的命名空间（如 `kokoro`）。
+    ///   传 nil 时路径与原来完全一致，所以已缓存的 Qwen3-TTS 音频不会失效。
     func save(
         data: Data,
         bookID: UUID,
         chapterID: UUID,
-        sentenceID: UUID
+        sentenceID: UUID,
+        backendSubdirectory: String? = nil
     ) throws -> URL {
 
         let chapterURL =
             audioDirectory(
                 bookID: bookID,
-                chapterID: chapterID
+                chapterID: chapterID,
+                backendSubdirectory: backendSubdirectory
             )
 
         try FileManager.default.createDirectory(
@@ -64,13 +68,15 @@ actor AudioStore {
     func load(
         bookID: UUID,
         chapterID: UUID,
-        sentenceID: UUID
+        sentenceID: UUID,
+        backendSubdirectory: String? = nil
     ) -> URL? {
 
         let chapterURL =
             audioDirectory(
                 bookID: bookID,
-                chapterID: chapterID
+                chapterID: chapterID,
+                backendSubdirectory: backendSubdirectory
             )
 
         let url =
@@ -93,13 +99,15 @@ actor AudioStore {
     func delete(
         bookID: UUID,
         chapterID: UUID,
-        sentenceID: UUID
+        sentenceID: UUID,
+        backendSubdirectory: String? = nil
     ) {
 
         let url =
             audioDirectory(
                 bookID: bookID,
-                chapterID: chapterID
+                chapterID: chapterID,
+                backendSubdirectory: backendSubdirectory
             )
             .appendingPathComponent(
                 "\(sentenceID.uuidString).wav"
@@ -130,10 +138,12 @@ actor AudioStore {
 
     private func audioDirectory(
         bookID: UUID,
-        chapterID: UUID
+        chapterID: UUID,
+        backendSubdirectory: String? = nil
     ) -> URL {
 
-        rootURL
+        let base =
+            rootURL
             .appendingPathComponent(
                 bookID.uuidString,
                 isDirectory: true
@@ -142,5 +152,12 @@ actor AudioStore {
                 chapterID.uuidString,
                 isDirectory: true
             )
+
+        guard let backendSubdirectory else { return base }
+
+        return base.appendingPathComponent(
+            backendSubdirectory,
+            isDirectory: true
+        )
     }
 }

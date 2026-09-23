@@ -13,8 +13,13 @@ actor SystemTTSService: TTSService {
         emotion: Emotion,
         intensity: Double,
         speed: Double,
-        pitch: Double
+        pitch: Double,
+        voiceStrength: Double
     ) async throws -> Data {
+
+        // AVSpeechUtterance 只有 volume（调低就是发虚），没有「饱满度」，
+        // 拿 voiceStrength 去驱动 volume 会适得其反，因此不使用。
+        _ = voiceStrength
 
         let sanitizedText = Self.sanitizeText(text)
 
@@ -32,7 +37,7 @@ actor SystemTTSService: TTSService {
            let voice = AVSpeechSynthesisVoice(identifier: voiceID) {
             utterance.voice = voice
         } else {
-            utterance.voice = AVSpeechSynthesisVoice(identifier: VoiceManager.fallbackVoice())
+            utterance.voice = AVSpeechSynthesisVoice(identifier: VoiceManager.unnamedVoice())
         }
 
         // Emotion-based adjustments
