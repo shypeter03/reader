@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+
+# Xcode 用户状态（每台机器/每个人都不同，不应入库）
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# 构建产物
+build/
+DerivedData/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode7v3
+!default.mode7v3
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+
+# 本地模型二进制（体积巨大，改由外部下载，不入版本库）
+Reader/SparkTTSCache/
+Reader/Qwen3TTSCache/
+Reader/Qwen3-0.6B-MLX-4bit/
+
+# Models
+Models/
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.pth
+
+# Generated audio
+*.wav
+*.m4a
+*.flac
+
+# Build
+.build/
+DerivedData/
+
+# Xcode
+xcuserdata/
+*.xcuserstate

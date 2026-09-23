@@ -1,0 +1,349 @@
+//
+//  FastChapterAnalyzer.swift
+//  Reader
+//
+//  Created by 粟海洋 on 2026/9/21.
+//
+
+import Foundation
+
+actor FastChapterAnalyzer {
+
+    // MARK: - Analyze
+
+    func analyze(
+        chapter: Chapter,
+        context: StoryContext
+    ) async throws -> Chapter {
+
+        var chapter = chapter
+
+        chapter.audioStatus = .analyzing
+
+        print("================================")
+        print("开始快速分析章节")
+        print("章节：\(chapter.title)")
+        print("句子数量：\(chapter.sentences.count)")
+        print("================================")
+
+        for index in chapter.sentences.indices {
+            let sentence = chapter.sentences[index]
+            var updated = sentence
+
+            let analysis = analyzeSentence(sentence.text)
+
+            updated.type = analysis.type
+            updated.speaker = analysis.speaker
+            updated.characterName = analysis.characterName
+            updated.emotion = analysis.emotion
+            updated.emotionIntensity = analysis.emotionIntensity
+            updated.speed = analysis.speed
+            updated.pitch = analysis.pitch
+
+            if analysis.speaker == .character,
+               let characterName = analysis.characterName {
+
+                let character = chapter.characters.first {
+                    $0.name == characterName
+                }
+
+                if let character {
+                    updated.characterID = character.id
+                } else {
+                    let newCharacter = Character(
+                        name: characterName,
+                        gender: .unknown,
+                        age: .unknown
+                    )
+                    chapter.characters.append(newCharacter)
+                    updated.characterID = newCharacter.id
+                }
+            }
+
+            chapter.sentences[index] = updated
+        }
+
+        chapter.audioStatus = .pending
+
+        print("快速分析完成")
+        print("================================")
+
+        return chapter
+    }
+
+    func unloadModel() async {
+    }
+
+    // MARK: - Sentence Analysis
+
+    private struct SentenceAnalysis {
+        let type: SentenceType
+        let speaker: SpeakerType
+        let characterName: String?
+        let emotion: Emotion
+        let emotionIntensity: Double
+        let speed: Double
+        let pitch: Double
+    }
+
+    private func analyzeSentence(_ text: String) -> SentenceAnalysis {
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmed.isEmpty else {
+            return SentenceAnalysis(
+                type: .narration,
+                speaker: .narrator,
+                characterName: nil,
+                emotion: .neutral,
+                emotionIntensity: 0.1,
+                speed: 1.0,
+                pitch: 0.0
+            )
+        }
+
+        let hasDialogue = containsDialogue(trimmed)
+
+        if hasDialogue {
+            return analyzeDialogue(trimmed)
+        } else {
+            return analyzeNarration(trimmed)
+        }
+    }
+
+    // MARK: - Dialogue Detection
+
+    private func containsDialogue(_ text: String) -> Bool {
+
+        let dialoguePatterns = [
+            "\u{201C}[^\u{201D}]*\u{201D}",
+            "\u{2018}[^\u{2019}]*\u{2019}",
+            "\u{300C}[^\u{300D}]*\u{300D}",
+            "\u{300E}[^\u{300F}]*\u{300F}"
+        ]
+
+        for pattern in dialoguePatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                if regex.firstMatch(in: text, options: [], range: range) != nil {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    // MARK: - Dialogue Analysis
+
+    private func analyzeDialogue(_ text: String) -> SentenceAnalysis {
+
+        var speakerName: String? = nil
+
+        let speakerPatterns = [
+            "([^，。！？\\s]{1,10})说道[：:]",
+            "([^，。！？\\s]{1,10})说[：:]",
+            "([^，。！？\\s]{1,10})问道[：:]",
+            "([^，。！？\\s]{1,10})问[：:]",
+            "([^，。！？\\s]{1,10})喊道[：:]",
+            "([^，。！？\\s]{1,10})喊[：:]",
+            "([^，。！？\\s]{1,10})叫道[：:]",
+            "([^，。！？\\s]{1,10})叫[：:]",
+            "([^，。！？\\s]{1,10})答道[：:]",
+            "([^，。！？\\s]{1,10})答[：:]"
+        ]
+
+        for pattern in speakerPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
+                let range = NSRange(text.startIndex..<text.endIndex, in: text)
+                if let match = regex.firstMatch(in: text, options: [], range: range) {
+                    if let nameRange = Range(match.range(at: 1), in: text) {
+                        speakerName = String(text[nameRange])
+                        break
+                    }
+                }
+            }
+        }
+
+        let emotion = detectEmotion(from: text)
+        let intensity = detectIntensity(from: text, emotion: emotion)
+        let speed = detectSpeed(from: text, emotion: emotion)
+        let pitch = detectPitch(from: text, emotion: emotion)
+
+        return SentenceAnalysis(
+            type: .dialogue,
+            speaker: .character,
+            characterName: speakerName,
+            emotion: emotion,
+            emotionIntensity: intensity,
+            speed: speed,
+            pitch: pitch
+        )
+    }
+
+    // MARK: - Narration Analysis
+
+    private func analyzeNarration(_ text: String) -> SentenceAnalysis {
+
+        let emotion = detectEmotion(from: text)
+        let intensity = detectIntensity(from: text, emotion: emotion)
+        let speed = detectSpeed(from: text, emotion: emotion)
+        let pitch = detectPitch(from: text, emotion: emotion)
+
+        return SentenceAnalysis(
+            type: .narration,
+            speaker: .narrator,
+            characterName: nil,
+            emotion: emotion,
+            emotionIntensity: intensity,
+            speed: speed,
+            pitch: pitch
+        )
+    }
+
+    // MARK: - Emotion Detection
+
+    private func detectEmotion(from text: String) -> Emotion {
+
+        let lowercased = text.lowercased()
+
+        if text.contains("！") || text.contains("!") {
+            if containsKeywords(text, ["怒", "恨", "愤"]) {
+                return .angry
+            } else if containsKeywords(text, ["惊", "啊", "哇"]) {
+                return .surprised
+            } else if containsKeywords(text, ["快", "乐", "喜", "笑"]) {
+                return .excited
+            } else {
+                return .tense
+            }
+        }
+
+        if text.contains("？") || text.contains("?") {
+            return .surprised
+        }
+
+        if text.contains("……") || text.contains("...") {
+            if containsKeywords(text, ["泪", "哭", "悲", "伤"]) {
+                return .sad
+            } else {
+                return .calm
+            }
+        }
+
+        if containsKeywords(text, ["笑", "喜", "乐", "欢", "开心", "高兴"]) {
+            return .happy
+        }
+
+        if containsKeywords(text, ["哭", "泪", "悲", "伤", "痛", "哀"]) {
+            return .sad
+        }
+
+        if containsKeywords(text, ["怒", "恨", "愤", "气"]) {
+            return .angry
+        }
+
+        if containsKeywords(text, ["惊", "吓", "怕", "恐"]) {
+            return .fearful
+        }
+
+        if containsKeywords(text, ["紧", "急", "快", "冲"]) {
+            return .tense
+        }
+
+        if containsKeywords(text, ["静", "安", "平", "缓"]) {
+            return .calm
+        }
+
+        return .neutral
+    }
+
+    private func containsKeywords(_ text: String, _ keywords: [String]) -> Bool {
+        for keyword in keywords {
+            if text.contains(keyword) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // MARK: - Intensity Detection
+
+    private func detectIntensity(from text: String, emotion: Emotion) -> Double {
+
+        var intensity = 0.3
+
+        let exclamationCount = text.filter { $0 == "！" || $0 == "!" }.count
+        intensity += Double(exclamationCount) * 0.2
+
+        let questionCount = text.filter { $0 == "？" || $0 == "?" }.count
+        intensity += Double(questionCount) * 0.1
+
+        if text.contains("……") || text.contains("...") {
+            intensity -= 0.1
+        }
+
+        switch emotion {
+        case .angry, .surprised, .excited, .fearful, .tense:
+            intensity += 0.2
+        case .happy:
+            intensity += 0.1
+        case .sad, .calm, .neutral:
+            break
+        }
+
+        return max(0.0, min(1.0, intensity))
+    }
+
+    // MARK: - Speed Detection
+
+    private func detectSpeed(from text: String, emotion: Emotion) -> Double {
+
+        var speed = 1.0
+
+        switch emotion {
+        case .excited, .tense, .fearful:
+            speed = 1.15
+        case .angry:
+            speed = 1.1
+        case .happy:
+            speed = 1.05
+        case .sad:
+            speed = 0.9
+        case .calm:
+            speed = 0.95
+        case .surprised:
+            speed = 1.1
+        case .neutral:
+            speed = 1.0
+        }
+
+        if text.contains("……") || text.contains("...") {
+            speed -= 0.05
+        }
+
+        return max(0.7, min(1.3, speed))
+    }
+
+    // MARK: - Pitch Detection
+
+    private func detectPitch(from text: String, emotion: Emotion) -> Double {
+
+        var pitch = 0.0
+
+        switch emotion {
+        case .happy, .excited, .surprised:
+            pitch = 0.08
+        case .angry, .tense:
+            pitch = 0.05
+        case .sad, .fearful:
+            pitch = -0.05
+        case .calm:
+            pitch = -0.02
+        case .neutral:
+            pitch = 0.0
+        }
+
+        return max(-0.2, min(0.2, pitch))
+    }
+}
