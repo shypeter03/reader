@@ -21,6 +21,9 @@ final class ReaderContainer {
         // 光 cached 就能堆到 4G+。在加载任何权重前先把 cacheLimit 压下来。
         MemoryProbe.configureCacheLimit()
 
+        // 旧布局的生成物在新路径下一条都读不到，启动时删一次再往下建 store。
+        ReaderCache.migrateLegacyLayoutOnce()
+
         // MARK: - AI Analyzer (Qwen3-0.6B)
 
         let aiService =

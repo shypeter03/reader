@@ -22,6 +22,8 @@ struct LibraryView: View {
 
     @State private var clearCacheTarget: Book?
 
+    @State private var deleteTarget: Book?
+
     private let bookStore = BookStore.shared
 
     private let pipeline = ReaderContainer.shared.pipeline
@@ -126,8 +128,40 @@ struct LibraryView: View {
                     "删除《\(clearCacheTarget?.title ?? "")》已合成的音频与句子标注，正文与书单保留，重新打开章节会按新流程重新生成。请在没有播放时操作。"
                 )
             }
-            .task {
-                await loadBooks()
+            .alert(
+                "删除这本书",
+                isPresented: Binding(
+                    get: {
+                        deleteTarget != nil
+                    },
+                    set: { value in
+                        if !value {
+                            deleteTarget = nil
+                        }
+                    }
+                )
+            ) {
+                Button("取消", role: .cancel) {
+                    deleteTarget = nil
+                }
+                Button("删除", role: .destructive) {
+                    if let book = deleteTarget {
+                        deleteTarget = nil
+                        Task {
+                            await deleteBook(book)
+                        }
+                    }
+                }
+            } message: {
+                Text(
+                    "将删除《\(deleteTarget?.title ?? "")》的正文、封面与全部生成缓存。删除后需要重新导入 EPUB。"
+                )
+            }
+            .onAppear {
+                // 从阅读页退回来时重读一次书单，阅读进度才是最新的
+                Task {
+                    await loadBooks()
+                }
             }
         }
     }
@@ -182,40 +216,130 @@ private extension LibraryView {
     }
 
     var bookList: some View {
-        ScrollView {
-            LazyVStack(spacing: 16) {
 
-                ForEach(books) { book in
+        // 列数按窗口宽度定，间距按列宽取比例。
+        // 固定像素的间距在宽屏上会让封面挨在一起。
+        GeometryReader { proxy in
 
-                    NavigationLink {
-                        BookDetailView(book: book)
-                    } label: {
+            let metrics = Self.gridMetrics(for: proxy.size.width)
 
-                        // 长按清理：重新生成音频前必须先清掉旧的错样本，
-                        // 否则 produce 的磁盘命中会把它原样播出来。
-                        #if DEBUG
-                        BookCard(book: book)
-                            .contextMenu {
-                                Button {
-                                    clearCacheTarget = book
-                                } label: {
-                                    Label(
-                                        "清空音频与标注",
-                                        systemImage: "arrow.counterclockwise"
-                                    )
+            ScrollView {
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(
+                            .flexible(),
+                            spacing: metrics.gutter
+                        ),
+                        count: metrics.columnCount
+                    ),
+                    alignment: .leading,
+                    spacing: metrics.rowGap
+                ) {
+
+                    ForEach(books) { book in
+
+                        NavigationLink {
+                            BookDetailView(book: book)
+                        } label: {
+
+                            // 长按两件事：清生成物（重新录制前的必经一步——磁盘命中会让
+                            // produce 把旧的错样本原样播出来）、删除整本书。
+                            BookCoverTile(book: book)
+                                .contextMenu {
+                                    Button {
+                                        clearCacheTarget = book
+                                    } label: {
+                                        Label(
+                                            "清空音频与标注",
+                                            systemImage: "arrow.counterclockwise"
+                                        )
+                                    }
+
+                                    Button(
+                                        role: .destructive
+                                    ) {
+                                        deleteTarget = book
+                                    } label: {
+                                        Label(
+                                            "删除这本书",
+                                            systemImage: "trash"
+                                        )
+                                    }
                                 }
-                            }
-                        #else
-                        BookCard(book: book)
-                        #endif
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
+                .padding(.horizontal, metrics.sidePadding)
+                .padding(.top, metrics.rowGap)
+                .padding(.bottom, 100)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 100)
         }
+    }
+}
+
+// MARK: - Grid metrics
+
+private extension LibraryView {
+
+    struct GridMetrics {
+        let columnCount: Int
+        let gutter: CGFloat
+        let rowGap: CGFloat
+        let sidePadding: CGFloat
+    }
+
+    /// 先定列数，再由「列间距 = 列宽 × 0.14、两侧留白 = 列间距 × 1.25」反解列宽：
+    /// width = 2·side + n·t + (n-1)·gutter。这样换屏幕时封面和留白同步缩放，
+    /// 而首张卡离屏幕边永远比离邻居更远，不会贴着边框。
+    static func gridMetrics(for width: CGFloat) -> GridMetrics {
+
+        let gutterRatio: CGFloat = 0.14
+        let sideRatio = gutterRatio * 1.25
+
+        let columnCount: Int
+        switch width {
+        case ..<520: columnCount = 2
+        case ..<700: columnCount = 3
+        case ..<900: columnCount = 4
+        default: columnCount = 5
+        }
+
+        let tile = width / (
+            CGFloat(columnCount)
+            + CGFloat(columnCount - 1) * gutterRatio
+            + sideRatio * 2
+        )
+
+        return GridMetrics(
+            columnCount: columnCount,
+            gutter: tile * gutterRatio,
+            rowGap: tile * 0.22,
+            sidePadding: tile * sideRatio
+        )
+    }
+}
+
+// MARK: - Deletion
+
+private extension LibraryView {
+
+    /// 删一本书要动三处：生成缓存（音频 + 解析）、解压出来的正文与封面、书单记录。
+    /// 少了第一步的话调度表里会留着这本书「已完成」的任务记录，白占磁盘统计口径。
+    @MainActor
+    func deleteBook(_ book: Book) async {
+
+        await pipeline.clearMediaCache(bookID: book.id)
+
+        let rootURL = book.epubRootURL
+
+        await Task.detached {
+            try? FileManager.default.removeItem(at: rootURL)
+        }.value
+
+        await bookStore.delete(id: book.id)
+
+        books.removeAll { $0.id == book.id }
     }
 }
 

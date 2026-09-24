@@ -6,68 +6,173 @@
 //
 
 import SwiftUI
+import ImageIO
 
-struct BookCard: View {
+/// 封面图。EPUB 里的封面经常是打印稿尺寸，直接解码一张就是二十几兆内存，
+/// 所以走 ImageIO 按显示尺寸的 3 倍缩略图解，结果按路径缓存。
+struct CoverImage: View {
+
+    let url: URL?
+
+    let title: String
+
+    var body: some View {
+
+        // scaledToFill 的布局尺寸是「按比例铺满后的外接框」，比格子宽（0.75 的封面
+        // 在 2:3 格子里会报成 401pt 而不是 357pt），撑出去的部分会吃掉列间距，
+        // 于是真封面卡挨着、占位卡之间留白。frame(maxWidth: .infinity) 封顶不住
+        // 不肯缩的孩子，只有 GeometryReader + 定死宽高才行。
+        GeometryReader { proxy in
+
+            ZStack {
+
+                // 没封面时用书名铺一张色卡占位，风格与详情页一致
+                LinearGradient(
+                    colors: [Color.indigo, Color.purple],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+
+                Text(title)
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+                    .padding(16)
+
+                if let image = Self.load(url) {
+
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                }
+            }
+            .frame(
+                width: proxy.size.width,
+                height: proxy.size.height
+            )
+            .clipped()
+        }
+        .aspectRatio(2.0 / 3.0, contentMode: .fit)
+    }
+
+    private static let cache = NSCache<NSString, UIImage>()
+
+    private static let maxPixelSize: CGFloat = 720
+
+    private static func load(_ url: URL?) -> UIImage? {
+
+        guard let url else {
+            return nil
+        }
+
+        let key = url.path as NSString
+
+        if let hit = cache.object(forKey: key) {
+            return hit
+        }
+
+        guard let source = CGImageSourceCreateWithURL(
+            url as CFURL,
+            nil
+        ) else {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            options as CFDictionary
+        ) else {
+            return nil
+        }
+
+        let image = UIImage(cgImage: thumbnail)
+
+        cache.setObject(image, forKey: key)
+
+        return image
+    }
+}
+
+/// 书库里的一张书卡：只有封面和进度（对齐图书 App）。
+struct BookCoverTile: View {
 
     let book: Book
 
     var body: some View {
 
-        HStack(spacing: 16) {
+        VStack(
+            alignment: .leading,
+            spacing: 9
+        ) {
 
-            RoundedRectangle(cornerRadius: 10)
-                .fill(.quaternary)
-                .frame(
-                    width: 80,
-                    height: 110
+            CoverImage(
+                url: book.coverURL,
+                title: book.title
+            )
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: 12
                 )
-                .overlay {
-                    Image(systemName: "book.closed")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                }
-
-            VStack(
-                alignment: .leading,
-                spacing: 8
-            ) {
-
-                Text(book.title)
-                    .font(.headline)
-
-                if let author = book.author {
-                    Text(author)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text(
-                    "第 \(book.lastReadChapter + 1) 章"
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: 12
                 )
+                .strokeBorder(
+                    .quaternary,
+                    lineWidth: 0.5
+                )
+            }
+            .shadow(
+                color: .black.opacity(0.18),
+                radius: 6,
+                y: 4
+            )
+
+            Text(book.title)
                 .font(.subheadline)
+                // 固定占两行：否则一行书名的卡片进度条会比两行的往上跳，整行对不齐
+                .lineLimit(2, reservesSpace: true)
+                .multilineTextAlignment(.leading)
+
+            HStack(spacing: 7) {
 
                 ProgressView(
                     value: progress
                 )
-            }
+                .controlSize(.mini)
 
-            Spacer()
+                Text(
+                    "\(Int(progress * 100))%"
+                )
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+            }
         }
-        .padding()
-        .background(.thinMaterial)
-        .clipShape(
-            RoundedRectangle(cornerRadius: 16)
-        )
     }
 
+    /// 进度按章算：句子级位置要读 chapter.json 才知道分母，
+    /// 为了一条进度条去解析整本书的标注不值。
     private var progress: Double {
 
         guard !book.chapters.isEmpty else {
             return 0
         }
 
-        return Double(book.lastReadChapter)
+        return min(
+            1,
+            Double(book.lastReadChapter + 1)
             / Double(book.chapters.count)
+        )
     }
 }
 
@@ -122,33 +227,14 @@ private extension BookDetailView {
         VStack(spacing: 18) {
 
             // Cover
-            ZStack {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color.indigo,
-                                Color.purple
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                VStack(spacing: 10) {
-                    Image(systemName: "book.closed.fill")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.white.opacity(0.9))
-
-                    Text(book.title)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-                }
-                .padding(20)
-            }
+            CoverImage(
+                url: book.coverURL,
+                title: book.title
+            )
             .frame(width: 150, height: 210)
+            .clipShape(
+                RoundedRectangle(cornerRadius: 16)
+            )
             .shadow(
                 color: .black.opacity(0.15),
                 radius: 15,

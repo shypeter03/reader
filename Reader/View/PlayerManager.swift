@@ -296,6 +296,21 @@ final class PlayerManager: ObservableObject {
         currentSentenceIndex = index
         playCurrentSentence()
     }
+
+    /// 恢复上次的阅读位置：只把指针挪到那句，不起播。
+    func restoreSentenceIndex(_ index: Int) {
+
+        guard sentences.indices.contains(index) else {
+            return
+        }
+
+        currentSentenceIndex = index
+
+        currentText = sentences[index].text
+
+        currentCharacter =
+            sentences[index].characterName ?? "旁白"
+    }
 }
 
 

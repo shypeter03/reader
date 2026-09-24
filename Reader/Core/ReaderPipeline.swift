@@ -287,14 +287,17 @@ actor ReaderPipeline {
     /// 清理入口：丢掉一本书的音频与标注结果，让它重新走一遍流水线。
     /// 正文（AIReader/Books/ 下的解压产物）与书单不动，不需要重新导入。
     func clearMediaCache(bookID: UUID) async {
-        // discardBookAudio 删的是 AIReader/{bookID}/ 整棵树，ChapterStore 的
-        // chapters/ 就在同一棵树下，所以音频与 chapter.json 一次删净。
+        // 两棵树都要删：音频在 Library/Caches/novel/，解析在 Application Support
+        // 的 cache/novel/。只删一边的话，另一边会留下指向已消失文件的 audioURL
+        // 或者带着旧标注的句子，那种句子再也不会被重新排产生成。
         await generator.discardBookAudio(bookID: bookID)
+        await chapterStore.deleteBook(bookID: bookID)
         let dropped = await store.dropBook(bookID: bookID)
         await cache.removeAll()
         interactiveRequests[bookID] = nil
         liveRead = nil
-        print("[Cache] 已清空 book=\(bookID) 的音频与标注：丢弃 \(dropped) 个排队/已完成任务")
+        print("[Cache] 已清空 book=\(bookID) 的音频与标注：丢弃 \(dropped) 个排队/已完成任务，"
+            + "剩余缓存 \(ReaderCache.format(ReaderCache.totalSize()))")
     }
 
     func chapterUpdates(_ id: UUID) -> AsyncThrowingStream<Chapter, Error> {
@@ -665,7 +668,16 @@ actor ReaderPipeline {
     private func hydrate(_ raw: Chapter, bookID: UUID) async -> Chapter {
         guard let saved = await chapterStore.load(bookID: bookID, chapterID: raw.id) else { return raw }
         var result = raw; result.characters = saved.characters; result.analysisStatus = saved.analysisStatus; result.ttsStatus = saved.ttsStatus; result.audioStatus = saved.audioStatus
-        for i in result.sentences.indices where saved.sentences.indices.contains(i) { if saved.sentences[i].text == result.sentences[i].text { result.sentences[i] = saved.sentences[i] } }
+        for i in result.sentences.indices where saved.sentences.indices.contains(i) {
+            // 音频现在在 Library/Caches 下，系统可能已经把它回收了：这种句子要退回未合成的
+            // 原样，让排产重新看见它，否则播放器拿到一个指向空气的 URL。
+            let audioStillThere = saved.sentences[i].audioURL.map {
+                FileManager.default.fileExists(atPath: $0.path)
+            } ?? true
+            if saved.sentences[i].text == result.sentences[i].text, audioStillThere {
+                result.sentences[i] = saved.sentences[i]
+            }
+        }
         return result
     }
     private func priority(_ index: Int, near current: Int) -> Int { 10_000 - min(1_000, abs(index - current) * 10) }

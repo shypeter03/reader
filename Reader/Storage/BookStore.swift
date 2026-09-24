@@ -71,6 +71,26 @@ actor BookStore {
         saveToDisk()
     }
 
+    /// 落一次阅读位置：章在 `chapters` 里的下标 + 章内句序。
+    /// 每切一句都会调到这里，所以值没变就绝不写盘（整份书单会被重新编码一遍）。
+    func setProgress(
+        bookID: UUID,
+        chapterIndex: Int,
+        sentenceIndex: Int
+    ) {
+        loadIfNeeded()
+        guard let index = books.firstIndex(where: { $0.id == bookID }) else {
+            return
+        }
+        guard books[index].lastReadChapter != chapterIndex
+            || books[index].lastReadSentence != sentenceIndex else {
+            return
+        }
+        books[index].lastReadChapter = chapterIndex
+        books[index].lastReadSentence = sentenceIndex
+        saveToDisk()
+    }
+
     // MARK: - Persistence
 
     /// init 是 nonisolated 的，读盘必须延到首次 actor 隔离访问时做。

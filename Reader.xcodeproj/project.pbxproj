@@ -19,6 +19,7 @@
 		5222141E303EE5820022E4E3 /* Sentence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222141D303EE5820022E4E3 /* Sentence.swift */; };
 		52221420303EE5930022E4E3 /* Chapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222141F303EE5930022E4E3 /* Chapter.swift */; };
 		52221422303EE5AA0022E4E3 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221421303EE5AA0022E4E3 /* Book.swift */; };
+		52AA000030AA000000000A02 /* PageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000A01 /* PageLayout.swift */; };
 		52221425303EE6040022E4E3 /* BookParing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221424303EE6040022E4E3 /* BookParing.swift */; };
 		5222142A303EE66A0022E4E3 /* AIAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221429303EE66A0022E4E3 /* AIAnalysis.swift */; };
 		5222142D303EE68B0022E4E3 /* AIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222142C303EE68B0022E4E3 /* AIService.swift */; };
@@ -30,11 +31,13 @@
 		52C1EC023090000000000004 /* KokoroProcessMemory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC013090000000000004 /* KokoroProcessMemory.swift */; };
 		52221434303EE6E40022E4E3 /* AudioSegment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221433303EE6E40022E4E3 /* AudioSegment.swift */; };
 		52221437303EE7020022E4E3 /* AudioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221436303EE7020022E4E3 /* AudioStore.swift */; };
+		52C1F0023099000000000001 /* ReaderCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1F0013099000000000001 /* ReaderCache.swift */; };
 		52221439303EE7160022E4E3 /* TTSGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221438303EE7160022E4E3 /* TTSGenerator.swift */; };
 		5222143C303EE7480022E4E3 /* TimelineBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222143B303EE7480022E4E3 /* TimelineBuilder.swift */; };
 		5222143F303EE7610022E4E3 /* ReaderPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222143E303EE7610022E4E3 /* ReaderPipeline.swift */; };
 		52221442303EE80D0022E4E3 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221441303EE80D0022E4E3 /* LibraryView.swift */; };
 		52221444303EE86E0022E4E3 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221443303EE86E0022E4E3 /* ReaderView.swift */; };
+		52AA000030AA000000000B02 /* ReaderPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000B01 /* ReaderPageView.swift */; };
 		52221446303EE8920022E4E3 /* BookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221445303EE8920022E4E3 /* BookView.swift */; };
 		52221448303EE8BD0022E4E3 /* SentenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221447303EE8BD0022E4E3 /* SentenceView.swift */; };
 		5222144A303EE8D40022E4E3 /* PlayBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221449303EE8D40022E4E3 /* PlayBar.swift */; };
@@ -127,6 +130,7 @@
 		5222141D303EE5820022E4E3 /* Sentence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sentence.swift; sourceTree = "<group>"; };
 		5222141F303EE5930022E4E3 /* Chapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chapter.swift; sourceTree = "<group>"; };
 		52221421303EE5AA0022E4E3 /* Book.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Book.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000A01 /* PageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageLayout.swift; sourceTree = "<group>"; };
 		52221424303EE6040022E4E3 /* BookParing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookParing.swift; sourceTree = "<group>"; };
 		52221429303EE66A0022E4E3 /* AIAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAnalysis.swift; sourceTree = "<group>"; };
 		5222142C303EE68B0022E4E3 /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
@@ -138,11 +142,13 @@
 		52C1EC013090000000000004 /* KokoroProcessMemory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KokoroProcessMemory.swift; sourceTree = "<group>"; };
 		52221433303EE6E40022E4E3 /* AudioSegment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSegment.swift; sourceTree = "<group>"; };
 		52221436303EE7020022E4E3 /* AudioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioStore.swift; sourceTree = "<group>"; };
+		52C1F0013099000000000001 /* ReaderCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderCache.swift; sourceTree = "<group>"; };
 		52221438303EE7160022E4E3 /* TTSGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSGenerator.swift; sourceTree = "<group>"; };
 		5222143B303EE7480022E4E3 /* TimelineBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelineBuilder.swift; sourceTree = "<group>"; };
 		5222143E303EE7610022E4E3 /* ReaderPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPipeline.swift; sourceTree = "<group>"; };
 		52221441303EE80D0022E4E3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		52221443303EE86E0022E4E3 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000B01 /* ReaderPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPageView.swift; sourceTree = "<group>"; };
 		52221445303EE8920022E4E3 /* BookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookView.swift; sourceTree = "<group>"; };
 		52221447303EE8BD0022E4E3 /* SentenceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentenceView.swift; sourceTree = "<group>"; };
 		52221449303EE8D40022E4E3 /* PlayBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayBar.swift; sourceTree = "<group>"; };
@@ -308,6 +314,7 @@
 				52221433303EE6E40022E4E3 /* AudioSegment.swift */,
 				5222145D303EF7C10022E4E3 /* EPUBBook.swift */,
 				5222145F303EF7D10022E4E3 /* ChapterDescriptor.swift */,
+				52AA000030AA000000000A01 /* PageLayout.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -372,6 +379,7 @@
 				52C1D7103051000000000001 /* ChapterCache.swift */,
 				52C1D7123051000000000003 /* BookStore.swift */,
 				52C1D7223060000000000003 /* ChapterStore.swift */,
+				52C1F0013099000000000001 /* ReaderCache.swift */,
 			);
 			path = Storage;
 			sourceTree = "<group>";
@@ -397,6 +405,7 @@
 			isa = PBXGroup;
 			children = (
 				52221441303EE80D0022E4E3 /* LibraryView.swift */,
+				52AA000030AA000000000B01 /* ReaderPageView.swift */,
 				52221443303EE86E0022E4E3 /* ReaderView.swift */,
 				52221445303EE8920022E4E3 /* BookView.swift */,
 				52221447303EE8BD0022E4E3 /* SentenceView.swift */,
@@ -611,6 +620,7 @@
 				5222142D303EE68B0022E4E3 /* AIService.swift in Sources */,
 				5222144A303EE8D40022E4E3 /* PlayBar.swift in Sources */,
 				52221444303EE86E0022E4E3 /* ReaderView.swift in Sources */,
+				52AA000030AA000000000B02 /* ReaderPageView.swift in Sources */,
 				52221446303EE8920022E4E3 /* BookView.swift in Sources */,
 				522213E8303EE4160022E4E3 /* ContentView.swift in Sources */,
 				52B0C6DF303FDF5B0073EED6 /* ReaderContainer.swift in Sources */,
@@ -622,6 +632,7 @@
 				5222141E303EE5820022E4E3 /* Sentence.swift in Sources */,
 				52221422303EE5AA0022E4E3 /* Book.swift in Sources */,
 				5222145E303EF7C10022E4E3 /* EPUBBook.swift in Sources */,
+				52AA000030AA000000000A02 /* PageLayout.swift in Sources */,
 				525CEC9E303FA9FC00260A94 /* AIError.swift in Sources */,
 				52221462303F03B90022E4E3 /* MLXQwenService.swift in Sources */,
 				5222144E303EE9EC0022E4E3 /* PlayerManager.swift in Sources */,
@@ -629,6 +640,7 @@
 				525CECA0303FAA6500260A94 /* AIAnalysisResult.swift in Sources */,
 				52221448303EE8BD0022E4E3 /* SentenceView.swift in Sources */,
 				52221437303EE7020022E4E3 /* AudioStore.swift in Sources */,
+				52C1F0023099000000000001 /* ReaderCache.swift in Sources */,
 				52C1D7113051000000000001 /* ChapterCache.swift in Sources */,
 				52C1D7133051000000000003 /* BookStore.swift in Sources */,
 				52C1D7153051000000000005 /* FastChapterAnalyzer.swift in Sources */,

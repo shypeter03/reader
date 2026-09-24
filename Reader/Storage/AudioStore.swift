@@ -9,31 +9,19 @@ import Foundation
 
 actor AudioStore {
 
-    private let rootURL: URL
+    /// 音频落在 `Library/Caches/novel/` 下（见 ``ReaderCache``）：可以让系统在
+    /// 磁盘紧张时回收，所以 `load` 返回 nil 是正常结果，不是错误。
+    private let rootURL: URL = ReaderCache.audioRoot
 
     init() {
-
-        let base =
-            FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            )[0]
-
-        rootURL =
-            base
-            .appendingPathComponent(
-                "AIReader",
-                isDirectory: true
-            )
-
         try? FileManager.default.createDirectory(
             at: rootURL,
             withIntermediateDirectories: true
         )
     }
 
-    /// - Parameter backendSubdirectory: 不同 TTS 后端的命名空间（如 `kokoro`）。
-    ///   传 nil 时路径与原来完全一致，所以已缓存的 Qwen3-TTS 音频不会失效。
+    /// - Parameter backendSubdirectory: 不同 TTS 后端的命名空间（`edge-v1`/`kokoro-v3`），
+    ///   换主后端时互不误命中；传 nil 时不带这一层（Qwen3-TTS 的平铺形状）。
     func save(
         data: Data,
         bookID: UUID,
@@ -118,9 +106,9 @@ actor AudioStore {
         )
     }
 
-    /// 清掉整本书的合成产物。这里删的是 AIReader/{bookID}/ 整棵目录，
-    /// ChapterStore 的 chapters/ 就在同一棵树下，所以一次删净：只删 .wav 会
-    /// 留下指向已消失文件的 audioURL，那种句子再也不会被重新排产生成。
+    /// 清掉整本书的合成产物：`Caches/novel/{bookID}/` 整棵树。
+    /// 解析结果不在这棵树下（它在 Application Support 的 cache/ 里），
+    /// 所以「清空音频与标注」要两个 store 各删一次，别只调这里。
     func deleteBook(
         bookID: UUID
     ) {

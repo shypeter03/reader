@@ -41,6 +41,19 @@ struct SettingsView: View {
     )
     private var ttsEngineRaw: String = TTSEngineType.edge.rawValue
 
+    @State private var cacheBytes: Int64?
+
+    @State private var showClearCache = false
+
+    /// 书单（清理要逐本走 pipeline）+ 手动刷新统计的触发器
+    @State private var books: [Book] = []
+
+    @State private var reloadToken = 0
+
+    private let pipeline = ReaderContainer.shared.pipeline
+
+    private let bookStore = BookStore.shared
+
     var body: some View {
 
         NavigationStack {
@@ -183,44 +196,92 @@ private extension SettingsView {
 
     var dataSection: some View {
 
-        Section("数据") {
+        Section {
 
             HStack {
 
                 Label(
-                    "音频缓存",
+                    "生成缓存",
                     systemImage:
                         "internaldrive"
                 )
 
                 Spacer()
 
-                Text("0 MB")
-                    .foregroundStyle(
-                        .secondary
-                    )
+                Text(
+                    cacheBytes == nil
+                        ? "统计中…"
+                        : ReaderCache.format(cacheBytes ?? 0)
+                )
+                .foregroundStyle(
+                    .secondary
+                )
+                .monospacedDigit()
             }
+
+            Text(
+                "合成音频与 AI 标注都在这里。删了不影响书单和正文，重新打开章节会按当前流程重做。"
+            )
+            .font(.footnote)
+            .foregroundStyle(.secondary)
 
             Button(
                 role: .destructive
             ) {
 
-                clearCache()
+                showClearCache = true
 
             } label: {
 
                 Label(
-                    "清除音频缓存",
+                    "清除生成缓存",
                     systemImage:
                         "trash"
                 )
             }
+        } header: {
+            Text("数据")
+        }
+        .alert(
+            "清除生成缓存",
+            isPresented: $showClearCache
+        ) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) {
+                clearCache()
+            }
+        } message: {
+            Text("每本书的音频与句子标注都会被删除，正在播放时请先暂停。清除后重新打开章节会重新生成。")
+        }
+        .task(id: reloadToken) {
+            // 清理要逐本走 pipeline，所以书单得先拿到
+            books = await bookStore.getAll()
+            cacheBytes = await measureCache()
         }
     }
 
+    /// 统计要遍历两棵目录树，几千个文件，别放在主线程的 body 里算。
+    func measureCache() async -> Int64 {
+        await Task.detached(priority: .utility) {
+            ReaderCache.totalSize()
+        }.value
+    }
+
+    /// 逐本走 pipeline 的清理：除了删文件，还要把调度表里这本书的任务丢掉，
+    /// 否则会留着一批「已完成」的记录，重新打开时不再排产。
     func clearCache() {
 
-        // 后面接 AudioStore
+        let books = self.books
+        let pipeline = self.pipeline
+
+        Task {
+
+            for book in books {
+                await pipeline.clearMediaCache(bookID: book.id)
+            }
+
+            cacheBytes = await measureCache()
+        }
     }
 }
 
