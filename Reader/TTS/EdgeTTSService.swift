@@ -2,9 +2,21 @@
 //  EdgeTTSService.swift
 //  Reader
 //
+//  Edge TTS 的网络细节全部交给 `SwiftEdgeTTS`（herrkaefer/SwiftEdgeTTS 1.3.0）：
+//  WebSocket 握手、`Sec-MS-GEC` DRM 令牌、speech.config、音频分片与 turn.end 的解析都在库里。
+//  这个文件只留 Reader 自己的策略：选哪把声音、情绪怎么折成 prosody、句中拉丁片段怎么去掉，
+//  以及把库里「合成到文件」的产物取回成 `Data`（`AudioStore` 要的是字节，不是路径）。
+//
+//  为什么换掉 brewusinc/Edge-TTS 1.0.0：它把 `Sec-MS-GEC-Version` 钉在 Chromium 130，
+//  微软现在就拒这一档握手——本机实测 WS upgrade 返回 403、连接挂死不返回，
+//  也就是「websocket 无法连接」的直接原因。新库跟 Python edge-tts 7.2.7 的口径
+//  （Chromium 143 + 用服务端 Date 头校正时钟偏移再算令牌），本机实测 1~3s 出
+//  24kHz/48kbps 的 MP3，四路并发各句互不串。
+//
 
-import AVFoundation
 import Foundation
+import SherpaKokoroKit
+import SwiftEdgeTTS
 
 actor EdgeTTSService: TTSService {
 
@@ -27,15 +39,48 @@ actor EdgeTTSService: TTSService {
         ]
     }
 
-    // MARK: - Properties
+    /// 磁盘缓存命名空间：Edge 的音频落在 `{书}/{章}/edge-v1/` 下，与 Kokoro（`kokoro-v3`）、
+    /// Qwen3（平铺）互不命中。缓存键只有「书/章/句」，不含后端也不含声音，
+    /// 所以换主后端必须换命名空间，否则旧音频会原样命中、换后端等于没换。
+    nonisolated static let audioNamespace = "edge-v1"
 
-    private var rawWS: RawWebSocket?
+    /// 单次合成的时限。
+    ///
+    /// Edge 在主后端位上时这个值直接决定「网络不通时要多久才让 Kokoro 接手」：
+    /// 最坏情况 = 本值 × ``attempts`` × ``FallbackTTSService.primaryFailureThreshold``
+    /// 秒的静音，所以压到 10s（正常一句的往返只有 1~3s）。
+    private static let synthesisTimeout: TimeInterval = 10
 
-    private var pendingRequests: [String: AsyncStream<WebSocketMessage>.Continuation] = [:]
+    /// 整句的尝试次数。Edge 是首选后端，它失败这一句才轮到 Kokoro，
+    /// 不必像兜底位那样死磕——多试一次就多等一个超时。
+    private static let attempts = 2
 
-    private var isConnected = false
+    /// 本地那两套后端的说话人名 → Edge 的 voice 名。
+    ///
+    /// `voiceID` 一路传下来都是 ``VoiceManager`` 给 Qwen3 CustomVoice 起的名字
+    /// （`Uncle_Fu` / `Ryan`…），Edge 收到不认识的名字会让整次请求失败——
+    /// 那时它就在主后端位上，等于整本书一句都不出声。所以这里必须**穷尽**，
+    /// 绝不把未知名字直接透传。
+    private static let speakerAlias: [String: String] = [
+        "Uncle_Fu": Voice.yunyang,   // 旁白/年长男
+        "Ryan": Voice.yunxi,
+        "Aiden": Voice.yunxi,
+        "Dylan": Voice.yunxi,
+        "Eric": Voice.yunjian,
+        "Vivian": Voice.xiaoxiao,
+        "Serena": Voice.xiaoyi,
+    ]
 
-    private var connectionID = UUID().uuidString
+    /// 时限靠它落地：库里没有任何超时参数，只能从注入的 URLSession 上夹。
+    private let session: URLSession
+
+    init() {
+        let configuration = URLSessionConfiguration.default
+        // 只有 resource 那一档掐得住 WebSocket：实测把它压到 1s，一句正常要 2.5s 的
+        // 请求会在 1.2s 抛 `cancelled`；而 request timeout 压到 1s 完全无效（2.6s 照样成功）。
+        configuration.timeoutIntervalForResource = Self.synthesisTimeout
+        session = URLSession(configuration: configuration)
+    }
 
     // MARK: - TTSService
 
@@ -62,43 +107,85 @@ actor EdgeTTSService: TTSService {
             basePitch: pitch
         )
 
-        try await ensureConnected()
+        // 两套后端读到同一句中文时不该冒出英文：降级链上两句的音色本来就不一致，
+        // 再夹一个英文词读法就更跳。
+        let spoken = KokoroSpeechText.speakable(text).0
 
-        let requestID = UUID().uuidString
+        // 每次调用各开一条 WebSocket，库自己收尾（turn.end 后 cancel），重试不用清理。
+        let client = SwiftEdgeTTS.EdgeTTSService(session: session)
 
-        let ssml = buildSSML(
-            text: text,
-            voice: voice,
-            speed: adjustedSpeed,
-            pitch: adjustedPitch
-        )
+        // 库里已经会转义 `& < > " '`，这里再转一次会变成 `&amp;amp;`，念出来就是英文字母。
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("reader-edge-\(UUID().uuidString).mp3")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
 
-        let audioData = try await sendRequest(
-            requestID: requestID,
-            ssml: ssml
-        )
+        var lastError: Error?
 
-        return audioData
+        for attempt in 1...Self.attempts {
+            do {
+                _ = try await client.synthesize(
+                    text: spoken,
+                    voice: voice,
+                    outputURL: audioURL,
+                    rate: Self.ssmlRate(adjustedSpeed),
+                    volume: "+0%",
+                    pitch: Self.ssmlPitch(adjustedPitch)
+                )
+                let audioData = try Data(contentsOf: audioURL)
+                // 库里「一个分片都没收到」时是拿不到文件的，但服务端拒了 SSML 也可能
+                // 留个空文件；0 字节存进缓存就是一条永远播不响的静音。
+                guard !audioData.isEmpty else { throw EdgeTTSError.synthesisFailed }
+                if attempt > 1 { print("EdgeTTS 第 \(attempt) 次尝试成功") }
+                return audioData
+            } catch {
+                lastError = error
+                print("EdgeTTS 合成失败（尝试 \(attempt)/\(Self.attempts)）：\(error)")
+                if attempt < Self.attempts {
+                    try? await Task.sleep(for: .milliseconds(500 * Int64(attempt)))
+                }
+            }
+        }
+
+        throw lastError ?? EdgeTTSError.synthesisFailed
     }
 
     // MARK: - Voice Resolution
 
     private func resolveVoice(_ voiceID: String) -> String {
 
-        switch voiceID {
+        let trimmed = voiceID.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        case "narrator":
-            return Voice.yunyang
+        if let alias = Self.speakerAlias[trimmed] { return alias }
+        if Voice.all.contains(where: { $0.id == trimmed }) { return trimmed }
+        if trimmed == "narrator" { return Voice.yunyang }
+        if trimmed.isEmpty || trimmed == "default" { return Voice.xiaoxiao }
 
-        case "default", "":
-            return Voice.xiaoxiao
-
-        default:
-            return voiceID
+        // 角色表里可能有历史遗留的自定义 voiceID：按字节确定性散列挑一把，
+        // 同一角色每次都落到同一个声音，不会出现同一角色两句换一个嗓。
+        let pool = Voice.all.map(\.id)
+        var acc = 0
+        for byte in trimmed.utf8 {
+            acc = (acc &* 31 &+ Int(byte)) % 1_000_003
         }
+        return pool[acc % pool.count]
     }
 
-    // MARK: - Emotion Adjustment
+    // MARK: - Prosody
+
+    /// SSML 的 rate 是**相对增量**，不是绝对百分比——这一点写代码的人最容易想当然，
+    /// 而说错不报错，只会整本书都念得飞快。实测同一句：
+    /// `"+0%"` → 4.70s、`"100%"` → 2.38s（被念成 +100%）、`"+15%"` → 4.10s、`"-15%"` → 5.52s。
+    /// 所以 speed 1.0 必须发 `"+0%"`，而不是以前那个 `"100%"`。
+    private static func ssmlRate(_ speed: Double) -> String {
+        String(format: "%+.0f%%", (speed - 1) * 100)
+    }
+
+    /// pitch 同理要带符号和单位：`"+0Hz"`/`"+20Hz"`/`"-20Hz"` 都被接受
+    /// （`"+0"` 这种少了 `Hz` 的写法服务端会直接关掉连接）。
+    /// 注意这里只验过「不报错」，音高有没有真的变化，用时长是量不出来的。
+    private static func ssmlPitch(_ pitch: Double) -> String {
+        String(format: "%+.0fHz", pitch * 100)
+    }
 
     private func emotionAdjustment(
         emotion: Emotion,
@@ -148,313 +235,4 @@ actor EdgeTTSService: TTSService {
             max(-0.2, min(0.2, basePitch + pitchDelta))
         )
     }
-
-    // MARK: - SSML
-
-    private func buildSSML(
-        text: String,
-        voice: String,
-        speed: Double,
-        pitch: Double
-    ) -> String {
-
-        let ratePercent = Int(speed * 100)
-        let pitchSemitones = Int(pitch * 100)
-
-        let escapedText = text
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-
-        return """
-        <speak version='1.0' xml:lang='zh-CN'>
-        <voice name='\(voice)'>
-        <prosody rate='\(ratePercent)%' pitch='\(pitchSemitones > 0 ? "+" : "")\(pitchSemitones)Hz'>
-        \(escapedText)
-        </prosody>
-        </voice>
-        </speak>
-        """
-    }
-
-    // MARK: - WebSocket Connection
-
-    private func ensureConnected() async throws {
-
-        guard !isConnected else { return }
-
-        var lastError: Error?
-
-        for attempt in 1...3 {
-            do {
-                print("EdgeTTS 连接尝试 \(attempt)/3...")
-                try await connect()
-                print("EdgeTTS 连接成功")
-                return
-            } catch {
-                print("EdgeTTS 连接失败 (尝试 \(attempt)): \(error)")
-                lastError = error
-                rawWS?.close()
-                rawWS = nil
-                isConnected = false
-
-                if attempt < 3 {
-                    try await Task.sleep(for: .seconds(1))
-                }
-            }
-        }
-
-        throw lastError ?? EdgeTTSError.connectionFailed
-    }
-
-    private func connect() async throws {
-
-        rawWS?.close()
-
-        connectionID = UUID().uuidString
-
-        let host = "speech.platform.bing.com"
-        let port: UInt16 = 443
-        let path = "/consumer/speech/synthesize/read/boundary/edge/v1?trustedclienttoken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=\(connectionID)"
-
-        let headers: [String: String] = [
-            "Origin": "chrome-extension://jdicdacmpkdpkpgbhggbgahhciolbepb",
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        ]
-
-        let ws = RawWebSocket()
-
-        ws.onConnect = { [weak self] in
-            Task { [weak self] in
-                await self?.setConnected(true)
-            }
-        }
-
-        ws.onMessage = { [weak self] data in
-            Task { [weak self] in
-                await self?.handleRawMessage(data)
-            }
-        }
-
-        ws.onError = { [weak self] error in
-            Task { [weak self] in
-                await self?.handleError(error)
-            }
-        }
-
-        ws.onDisconnect = { [weak self] in
-            Task { [weak self] in
-                await self?.handleDisconnect()
-            }
-        }
-
-        rawWS = ws
-        ws.connect(host: host, port: port, path: path, headers: headers)
-
-        for _ in 0..<40 {
-            try await Task.sleep(for: .milliseconds(100))
-            if isConnected { break }
-        }
-
-        guard isConnected else {
-            throw EdgeTTSError.connectionFailed
-        }
-
-        let config = """
-        {"context":{"synthesis":{"audio":{"metadataoptions":{"sentenceBoundaryEnabled":"false","wordBoundaryEnabled":"false"},"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}
-        """
-
-        let configMessage = "Path: speech.config\r\nContent-Type: application/json\r\n\r\n\(config)"
-
-        rawWS?.sendText(configMessage)
-    }
-
-    private func handleRawMessage(_ data: Data) {
-        let text = String(data: data, encoding: .utf8)
-        if let text {
-            parseTextMessage(text)
-        } else {
-            parseBinaryMessage(data)
-        }
-    }
-
-    private func setConnected(_ connected: Bool) {
-        isConnected = connected
-    }
-
-    private func handleError(_ error: Error) {
-        isConnected = false
-        for (_, continuation) in pendingRequests {
-            continuation.yield(.error(error))
-            continuation.finish()
-        }
-        pendingRequests.removeAll()
-    }
-
-    // MARK: - Send Request
-
-    private func sendRequest(
-        requestID: String,
-        ssml: String
-    ) async throws -> Data {
-
-        guard let ws = rawWS, isConnected else {
-            throw EdgeTTSError.notConnected
-        }
-
-        let (stream, continuation) = AsyncStream.makeStream(
-            of: WebSocketMessage.self
-        )
-
-        pendingRequests[requestID] = continuation
-
-        let textMessage = "Path: ssml\r\nX-RequestId: \(requestID)\r\nContent-Type: application/ssml+xml\r\n\r\n\(ssml)"
-
-        ws.sendText(textMessage)
-
-        var audioData = Data()
-
-        do {
-
-            for try await message in stream {
-
-                switch message {
-
-                case .audio(let data):
-                    audioData.append(data)
-
-                case .turnEnd:
-                    pendingRequests.removeValue(forKey: requestID)
-                    continuation.finish()
-                    return audioData
-
-                case .error(let error):
-                    pendingRequests.removeValue(forKey: requestID)
-                    continuation.finish()
-                    throw error
-                }
-            }
-
-        } catch {
-
-            pendingRequests.removeValue(forKey: requestID)
-            throw error
-        }
-
-        pendingRequests.removeValue(forKey: requestID)
-        return audioData
-    }
-
-    // MARK: - Parse Messages
-
-    private func parseTextMessage(_ text: String) {
-
-        guard let requestID = extractHeader(
-            from: text,
-            name: "X-RequestId"
-        ) else {
-            return
-        }
-
-        if text.contains("Path:turn.end") || text.contains("Path: TurnEnd") {
-
-            pendingRequests[requestID]?.yield(.turnEnd)
-        }
-    }
-
-    private func parseBinaryMessage(_ data: Data) {
-
-        let separator = Data([0x0D, 0x0A, 0x0D, 0x0A])
-
-        guard let separatorRange = data.range(of: separator) else {
-            return
-        }
-
-        let headerData = data[data.startIndex..<separatorRange.lowerBound]
-        let audioData = data[separatorRange.upperBound...]
-
-        guard let headerString = String(data: headerData, encoding: .utf8) else {
-            return
-        }
-
-        guard let requestID = extractHeader(
-            from: headerString,
-            name: "X-RequestId"
-        ) else {
-            return
-        }
-
-        if audioData.isEmpty {
-
-            if headerString.contains("Path:turn.end") || headerString.contains("Path: TurnEnd") {
-
-                pendingRequests[requestID]?.yield(.turnEnd)
-            }
-
-        } else {
-
-            pendingRequests[requestID]?.yield(.audio(Data(audioData)))
-        }
-    }
-
-    private func extractHeader(
-        from text: String,
-        name: String
-    ) -> String? {
-
-        let lines = text.components(separatedBy: "\r\n")
-
-        for line in lines {
-
-            if line.hasPrefix("\(name):") {
-
-                return line
-                    .dropFirst("\(name):".count)
-                    .trimmingCharacters(in: .whitespaces)
-            }
-        }
-
-        return nil
-    }
-
-    // MARK: - Disconnect
-
-    private func handleDisconnect() {
-
-        isConnected = false
-
-        rawWS = nil
-
-        for (_, continuation) in pendingRequests {
-
-            continuation.yield(.error(EdgeTTSError.disconnected))
-            continuation.finish()
-        }
-
-        pendingRequests.removeAll()
-    }
-
-    // MARK: - Cleanup
-
-    func disconnect() {
-
-        rawWS?.close()
-        rawWS = nil
-        isConnected = false
-
-        for (_, continuation) in pendingRequests {
-            continuation.finish()
-        }
-
-        pendingRequests.removeAll()
-    }
-}
-
-// MARK: - Supporting Types
-
-private enum WebSocketMessage {
-
-    case audio(Data)
-    case turnEnd
-    case error(Error)
 }

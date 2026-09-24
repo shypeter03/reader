@@ -106,6 +106,10 @@ enum HTMLTextExtractor {
         text =
             decodeEntities(text)
 
+        // 软连字符（&shy; / &#173;）只是「这里可以换行」的排版提示，
+        // 留在文本里会被当成一个非中文片段送去 espeak，念出杂音。
+        text = text.replacingOccurrences(of: "\u{00AD}", with: "")
+
         // 清理空格
 
         text =
@@ -115,17 +119,101 @@ enum HTMLTextExtractor {
                 options: .regularExpression
             )
 
-        text =
-            text.replacingOccurrences(
-                of: "\n\\s*\n+",
-                with: "\n",
-                options: .regularExpression
-            )
+        // 换行分两种：段内折行要接上，段落边界才留作句界。
+        // 见 ``joiningSoftLineBreaks``。
+        text = joiningSoftLineBreaks(text)
 
         return text
             .trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
+    }
+
+    /// 只有一个换行的地方是**段内折行**（XHTML 源码为了排版折的行、单个 `<br>`），
+    /// 直接接回同一句；两个及以上连续换行才是段落边界，压成一个 `\n` 留给断句当句界。
+    ///
+    /// 这一步非做不可：以前任何换行都被当成句末，
+    /// `<p>他把书轻轻放在\n桌上。</p>` 会切成「他把书轻轻放在」+「桌上。」，
+    /// 一个词从中间劈开，后一半只有 3 个字 —— 实测 Kokoro 对不足 4 字的输入
+    /// 大概率吐不出有效音频（3 字 6/6 次失败），整句就只能降级到 Edge。
+    static func joiningSoftLineBreaks(_ text: String) -> String {
+
+        let characters = Array(text)
+        let blanks: Set<Swift.Character> = ["\n", " ", "\t", "\u{00A0}"]
+
+        var output = ""
+        output.reserveCapacity(text.count)
+
+        var index = 0
+        while index < characters.count {
+
+            let character = characters[index]
+
+            guard character == "\n" else {
+                output.append(character)
+                index += 1
+                continue
+            }
+
+            // 吃掉一整段空白，顺便数里面有几个换行
+            var newlines = 0
+            var scan = index
+            while scan < characters.count, blanks.contains(characters[scan]) {
+                if characters[scan] == "\n" { newlines += 1 }
+                scan += 1
+            }
+
+            if newlines >= 2 {
+                output.append("\n")
+            } else if !output.isEmpty, scan < characters.count {
+                let previous = output.last ?? " "
+                let next = characters[scan]
+                if previous == "-", next.isLetter, next.isASCII, isWordBreakHyphen(output) {
+                    // 英文断词连字符：`infor-\nmation` 必须把连字符一起吃掉再接上。
+                    // 留着一个孤零零的「- 」会让 espeak 把 infor / mation 当两个词念，
+                    // 句尾就冒出一个来历不明的怪词。
+                    output.removeLast()
+                } else if !(isCJKContext(previous) || isCJKContext(next)) {
+                    // 中文两侧不留空格，英文之间要留一个，否则单词粘在一起
+                    output.append(" ")
+                }
+            }
+            // 段首/段尾的单个换行直接丢掉
+
+            index = scan
+        }
+
+        return output
+    }
+
+    /// 连字符是不是「英文断词」用的：前面紧跟 ASCII 字母才算。
+    /// 中文破折号「——」、行首的列表符「- 」都不算，别误删。
+    private static func isWordBreakHyphen(_ output: String) -> Bool {
+        guard output.last == "-" else { return false }
+        let hyphen = output.index(before: output.endIndex)
+        guard hyphen > output.startIndex else { return false }
+        let previous = output[output.index(before: hyphen)]
+        return previous.isLetter && previous.isASCII
+    }
+
+    /// 汉字符号（含全角标点、中日韩标点、弯引号）——它旁边不需要空格。
+    private static func isCJKContext(_ character: Swift.Character) -> Bool {
+        guard let scalar = character.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x2E80...0x303F,   // 部首、中日韩符号与标点（。、「』）
+             0x3040...0x30FF,   // 假名
+             0x3100...0x312F,   // 注音
+             0x3400...0x4DBF,   // 扩展 A
+             0x4E00...0x9FFF,   // 汉字
+             0xF900...0xFAFF,   // 兼容汉字
+             0xFE30...0xFE4F,   // 兼容标点
+             0xFF00...0xFFEF,   // 全角形式
+             0x20000...0x2A6DF, // 扩展 B
+             0x2010...0x201F:   // 连字符与弯引号 “ ” ‘ ’——中文小说里成片出现
+            return true
+        default:
+            return false
+        }
     }
 
     private static func removing(

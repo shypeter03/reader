@@ -33,7 +33,9 @@ public struct KokoroAudio: Sendable {
     public func wavData() -> Data {
         var pcm = Data(capacity: samples.count * 2)
         for sample in samples {
-            let clamped = max(-1, min(1, sample))
+            // 非有限采样归零，不能走夹取：`min/max` 与 NaN 的比较恒为 false，
+            // 夹取会把 NaN 变成满刻度 ±1.0 —— 一段坏音频存出来就是一声爆音。
+            let clamped = sample.isFinite ? max(-1, min(1, sample)) : Float(0)
             let intSample = Int16(clamped < 0 ? clamped * 32768 : clamped * 32767)
             withUnsafeBytes(of: intSample.littleEndian) { pcm.append(contentsOf: $0) }
         }

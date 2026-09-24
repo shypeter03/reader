@@ -25,4 +25,17 @@ enum KokoroProcessMemory {
         guard kr == KERN_SUCCESS else { return -1 }
         return Double(info.phys_footprint) / 1_048_576
     }
+
+    /// 热档位。Kokoro 是纯 CPU 的持续满载负载，一句接一句合成最容易把 SoC 推进
+    /// .fair/.serious，那时频率被系统压下去、RTF 直接翻倍——这跟输入长短无关。
+    /// 日志里必须带上它，否则「后面几句变慢」没法归因。
+    static func thermalState() -> String {
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return "正常"
+        case .fair: return "偏热"
+        case .serious: return "严重降频"
+        case .critical: return "临界降频"
+        @unknown default: return "未知"
+        }
+    }
 }

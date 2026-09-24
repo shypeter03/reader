@@ -34,12 +34,12 @@ final class ReaderContainer {
         let fastAnalyzer =
             FastChapterAnalyzer()
 
-        // MARK: - Local Neural TTS（两套后端并列；默认 Kokoro）
+        // MARK: - TTS 后端（三套并列；默认 Edge 在线合成）
 
         var engineType = TTSEngineType.current
 
-        // 默认后端换了，但 Kokoro 的权重在 App 之外：没装就退回 Qwen3-TTS，
-        // 否则整本书一句音频都出不来。
+        // 只有把 Kokoro 摆在主位时，权重缺失才是致命的（整章一句都出不来）。
+        // Edge 在主位时 Kokoro 只是兜底，缺了不影响出声，所以这里不动它。
         if engineType.usesKokoro,
            SherpaKokoroTTSService.modelDirectoryIfAvailable() == nil {
             print("⚠️ [TTS] 选择了 Kokoro，但未找到模型目录，本次退回 Qwen3-TTS。")
@@ -54,10 +54,18 @@ final class ReaderContainer {
 
         switch engineType {
 
+        case .edge:
+            // 降级链：Edge 优先，它抛错才轮到 Kokoro。Edge 是网络后端，可能没网、
+            // 可能被服务端拒（这条链反过来正是 Kokoro 权重缺失时的出路），
+            // 所以本地后端留在兜底位，任何一种后端单独坏掉都不该让整章静音。
+            ttsService = FallbackTTSService(
+                primary: EdgeTTSService(),
+                backup: SherpaKokoroTTSService()
+            )
+            audioNamespace = EdgeTTSService.audioNamespace
+
         case .sherpaKokoro:
-            // 降级链：Kokoro 优先，它抛错才轮到 Edge。Kokoro 的权重在 App 之外，
-            // 可能没拷进来 / 内存不足建不起引擎 / 单句推理出问题，任何一种都不该
-            // 让整章一句都读不出来。
+            // 同一条链的反序：Kokoro 优先，Edge 兜底。
             ttsService = FallbackTTSService(
                 primary: SherpaKokoroTTSService(),
                 backup: EdgeTTSService()

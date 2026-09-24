@@ -16,6 +16,10 @@ import SherpaOnnx
 ///   并发预取交给上层的作业队列排队，不在这里并发推理。
 public actor KokoroTTSEngine {
 
+    /// 判定「这句没出声」的峰值门限。实测正常句子在 0.19~0.51，
+    /// 失败样本是 0.000~0.02 量级，所以取 0.02：离两边都远。
+    public static let minimumAudiblePeak: Float = 0.02
+
     public let configuration: KokoroConfiguration
 
     private var engine: SherpaOnnxOfflineTtsWrapper?
@@ -198,12 +202,44 @@ public actor KokoroTTSEngine {
         )
 
         let started = CFAbsoluteTimeGetCurrent()
+        let cpuStarted = KokoroTTSEngine.processCPUTime()
         let audio = engine.generateWithConfig(text: trimmed, config: config, callback: nil, arg: nil)
         let elapsed = CFAbsoluteTimeGetCurrent() - started
+        // 进程 CPU 秒数与墙钟一起看才知道慢在哪：
+        // 并行度 ≈ 线程数 → 真在算（输入太长 / 模型本身慢）；
+        // 并行度 ≪ 1 → 线程被饿着（有人在抢核，或者热降频把频率压下去了）。
+        let cpuElapsed = KokoroTTSEngine.processCPUTime() - cpuStarted
 
         let samples = audio.samples
         guard !samples.isEmpty else {
             throw KokoroTTSError.emptyAudio(text: text)
+        }
+
+        // 一次遍历同时抓两样坏数据：非有限采样，和「全是零」的静音。
+        // 两者都由 (文本, 声音) 这一对稳定复现（见 ``KokoroTTSError/corruptedAudio``），
+        // 所以这里判定成失败而不是把坏数据交给上层——上层重试一次捞不回来就降级。
+        var nonFinite = 0
+        var peak: Float = 0
+        for sample in samples {
+            if sample.isFinite {
+                let magnitude = abs(sample)
+                if magnitude > peak { peak = magnitude }
+            } else {
+                nonFinite += 1
+            }
+        }
+
+        // NaN 绝不能走到 ``KokoroAudio/wavData``：那里夹取会把 NaN 变成满刻度，
+        // 一句坏音频存成 WAV 就是一声爆音。
+        guard nonFinite == 0 else {
+            throw KokoroTTSError.corruptedAudio(
+                text: trimmed,
+                nonFiniteSamples: nonFinite,
+                totalSamples: samples.count)
+        }
+        // 正常句子实测峰值 0.19~0.51，这条线离得很远，不会误杀轻声。
+        guard peak >= Self.minimumAudiblePeak else {
+            throw KokoroTTSError.silentAudio(text: trimmed, peak: peak)
         }
 
         let sampleRate = Int(audio.sampleRate)
@@ -220,9 +256,18 @@ public actor KokoroTTSEngine {
                 sampleRate: sampleRate,
                 audioDuration: duration,
                 generationTime: elapsed,
+                cpuTime: cpuElapsed,
                 rtf: duration > 0 ? elapsed / duration : .infinity
             )
         )
+    }
+
+    /// 整个进程已消耗的 CPU 秒数（所有线程累加）。Darwin 上 `clock_gettime` 支持
+    /// `CLOCK_PROCESS_CPUTIME_ID`；读不到时返回 0，调用方按「无数据」处理。
+    static func processCPUTime() -> Double {
+        var timestamp = timespec()
+        guard clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &timestamp) == 0 else { return 0 }
+        return Double(timestamp.tv_sec) + Double(timestamp.tv_nsec) / 1_000_000_000
     }
 
     private func requireEngine() throws -> SherpaOnnxOfflineTtsWrapper {
@@ -266,6 +311,9 @@ public struct KokoroGenerationMetrics: Sendable {
     public let sampleRate: Int
     public let audioDuration: Double
     public let generationTime: Double
+    /// 同一区间内**整个进程**的 CPU 秒数。与 generationTime 的比值就是有效并行度，
+    /// 用来区分「算得慢」和「被饿着 / 热降频」。
+    public let cpuTime: Double
     /// real-time factor：generationTime / audioDuration。越小越好。
     public let rtf: Double
 }

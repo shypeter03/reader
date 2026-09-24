@@ -78,7 +78,6 @@
 		52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7203060000000000001 /* EdgeTTSService.swift */; };
 		52C1EC073090000000000002 /* FallbackTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC073090000000000001 /* FallbackTTSService.swift */; };
 		52C1D7233060000000000003 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7223060000000000003 /* ChapterStore.swift */; };
-		52C1D7253060000000000005 /* RawWebSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7243060000000000005 /* RawWebSocket.swift */; };
 		52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */; };
 		523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */; };
 		52C1EC063090000000000002 /* kokoro-int8-multi-lang-v1_1 in Resources */ = {isa = PBXBuildFile; fileRef = 52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */; };
@@ -172,7 +171,6 @@
 		52C1D7203060000000000001 /* EdgeTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeTTSService.swift; sourceTree = "<group>"; };
 		52C1EC073090000000000001 /* FallbackTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FallbackTTSService.swift; sourceTree = "<group>"; };
 		52C1D7223060000000000003 /* ChapterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterStore.swift; sourceTree = "<group>"; };
-		52C1D7243060000000000005 /* RawWebSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RawWebSocket.swift; sourceTree = "<group>"; };
 		52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-0.6B-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3-0.6B-MLX-4bit"; sourceTree = "<absolute>"; };
 		523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3TTSCache/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; sourceTree = "<absolute>"; };
 		52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "kokoro-int8-multi-lang-v1_1"; path = "/Users/suhaiyang/Models/kokoro-int8-multi-lang-v1_1"; sourceTree = "<absolute>"; };
@@ -346,7 +344,6 @@
 				52C1DB013080000000000001 /* Qwen3TTSService.swift */,
 				52C1D7203060000000000001 /* EdgeTTSService.swift */,
 				52C1EC073090000000000001 /* FallbackTTSService.swift */,
-				52C1D7243060000000000005 /* RawWebSocket.swift */,
 				5235D15730411F54006B7E3A /* SpeechAudioBridge.swift */,
 				52B0C6DC303FDDBD0073EED6 /* SystemTTSService.swift */,
 				52221431303EE6D40022E4E3 /* TTSService.swift */,
@@ -464,6 +461,7 @@
 			packageProductDependencies = (
 				52221454303EF36B0022E4E3 /* ZIPFoundation */,
 				52C1EC053090000000000001 /* SherpaKokoroKit */,
+				52C1EC093090000000000001 /* SwiftEdgeTTS */,
 				52B0C6D3303FD66D0073EED6 /* Hub */,
 				52B0C6D5303FD66D0073EED6 /* Tokenizers */,
 				52B0C6D7303FD66D0073EED6 /* Transformers */,
@@ -558,6 +556,7 @@
 				5294206B304328B60012DAD8 /* XCLocalSwiftPackageReference "../../lib/mlx-swift-lm" */,
 				52C1EC043090000000000001 /* XCLocalSwiftPackageReference "Packages/SherpaKokoroKit" */,
 				52AA0001304400000012DAD8 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				52C1EC083090000000000001 /* XCRemoteSwiftPackageReference "SwiftEdgeTTS" */,
 			);
 			productRefGroup = 522213E3303EE4160022E4E3 /* Products */;
 			projectDirPath = "";
@@ -646,7 +645,6 @@
 				52C1DB093080000000000002 /* SpeechTokenizer.swift in Sources */,
 				52C1DB0A3080000000000002 /* SpeechTokenizerEncoder.swift in Sources */,
 				52C1DB0B3080000000000002 /* Talker.swift in Sources */,
-				52C1D7253060000000000005 /* RawWebSocket.swift in Sources */,
 				52C1D7233060000000000003 /* ChapterStore.swift in Sources */,
 				5222143F303EE7610022E4E3 /* ReaderPipeline.swift in Sources */,
 				52221432303EE6D40022E4E3 /* TTSService.swift in Sources */,
@@ -1037,6 +1035,14 @@
 				minimumVersion = 0.9.0;
 			};
 		};
+		52C1EC083090000000000001 /* XCRemoteSwiftPackageReference "SwiftEdgeTTS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/herrkaefer/SwiftEdgeTTS.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.3.0;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1049,6 +1055,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 52C1EC043090000000000001 /* XCLocalSwiftPackageReference "Packages/SherpaKokoroKit" */;
 			productName = SherpaKokoroKit;
+		};
+		52C1EC093090000000000001 /* SwiftEdgeTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 52C1EC083090000000000001 /* XCRemoteSwiftPackageReference "SwiftEdgeTTS" */;
+			productName = SwiftEdgeTTS;
 		};
 		5294206C304328B60012DAD8 /* BenchmarkHelpers */ = {
 			isa = XCSwiftPackageProductDependency;

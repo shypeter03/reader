@@ -92,7 +92,8 @@ struct Sentence: Identifiable, Codable, Sendable {
     ) {
         self.id = Self.deterministicID(
             chapterIndex: chapterIndex,
-            sentenceIndex: index
+            sentenceIndex: index,
+            text: text
         )
         self.index = index
         self.text = text
@@ -138,33 +139,38 @@ struct Sentence: Identifiable, Codable, Sendable {
         audioStatus = try c.decodeIfPresent(SentenceAudioStatus.self, forKey: .audioStatus) ?? (audioURL == nil ? .pending : .completed)
     }
 
+    /// 音频缓存的键。**文本必须进种子**：
+    /// 只按 (章节, 序号) 算的话，断句规则一改，同一个序号就变成了另一句话，
+    /// 旧音频会被原样端上来——表现是「听到的和看到的不是一句」。
     private static func deterministicID(
         chapterIndex: Int,
-        sentenceIndex: Int
+        sentenceIndex: Int,
+        text: String
     ) -> UUID {
-        let seed = "\(chapterIndex)-\(sentenceIndex)"
-        let hash = seed.utf8.reduce(into: UInt64(0)) {
-            $0 = $0 &* 31 &+ UInt64($1)
+        let seed = "\(chapterIndex)-\(sentenceIndex)-\(text)"
+        // 两轮不同初值的 FNV-1a 拼出 128 位：截断到 64 位的话，
+        // 撞车的两句话会共用一段音频，而且没有任何迹象。
+        let low = fnv1a(seed, state: 0xcbf2_9ce4_8422_2325)
+        let high = fnv1a(seed, state: 0x9e37_79b9_7f4a_7c15)
+
+        func bytes(_ value: UInt64) -> [UInt8] {
+            (0..<8).reversed().map { UInt8((value >> (8 * $0)) & 0xFF) }
         }
-        return UUID(
-            uuid: uuid_t(
-                UInt8((hash >> 56) & 0xFF),
-                UInt8((hash >> 48) & 0xFF),
-                UInt8((hash >> 40) & 0xFF),
-                UInt8((hash >> 32) & 0xFF),
-                UInt8((hash >> 24) & 0xFF),
-                UInt8((hash >> 16) & 0xFF),
-                UInt8((hash >> 8) & 0xFF),
-                UInt8(hash & 0xFF),
-                UInt8((hash >> 56) & 0xFF),
-                UInt8((hash >> 48) & 0xFF),
-                UInt8((hash >> 40) & 0xFF),
-                UInt8((hash >> 32) & 0xFF),
-                UInt8((hash >> 24) & 0xFF),
-                UInt8((hash >> 16) & 0xFF),
-                UInt8((hash >> 8) & 0xFF),
-                UInt8(hash & 0xFF)
-            )
-        )
+        let all = bytes(high) + bytes(low)
+        var uuid = uuid_t(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        withUnsafeMutableBytes(of: &uuid) { $0.copyBytes(from: all) }
+        // 顶上 version/variant 位，让它是个合法 UUID（导出到别处也不会被判成非法值）
+        uuid.6 = (uuid.6 & 0x0F) | 0x50
+        uuid.8 = (uuid.8 & 0x3F) | 0x80
+        return UUID(uuid: uuid)
+    }
+
+    private static func fnv1a(_ text: String, state: UInt64) -> UInt64 {
+        var hash = state
+        for byte in text.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return hash
     }
 }

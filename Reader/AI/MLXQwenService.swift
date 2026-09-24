@@ -96,7 +96,13 @@ actor MLXQwenService: AIService {
         session = nil
         model = nil
         isLoaded = false
-        print("Qwen3-0.6B 已卸载，内存已释放")
+        // 只置 nil 不等于把内存还给系统：MLX allocator 会把释放的 buffer 留在
+        // cached 池里复用（上限就是 cacheLimit，这里是 2GB），这部分是脏页、
+        // 计入进程驻留。所以「已卸载」却一直占着 1.x GB，Kokoro 那条路上
+        // 这笔内存一秒钟都不该留着——排空即清。
+        let cachedBefore = MLX.Memory.snapshot().cacheMemory
+        MLX.Memory.clearCache()
+        print("Qwen3-0.6B 已卸载，MLX cached \(cachedBefore / 1_048_576)MB → \(MLX.Memory.snapshot().cacheMemory / 1_048_576)MB")
     }
 
     // MARK: - Generate

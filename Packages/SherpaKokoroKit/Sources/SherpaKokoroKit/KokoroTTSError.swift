@@ -38,6 +38,28 @@ public enum KokoroTTSError: Error, Sendable {
 
     /// 引擎返回了空音频（文本被全部规范化掉了，或者只有标点）。
     case emptyAudio(text: String)
+
+    /// 引擎返回的采样里有 NaN/Inf。
+    ///
+    /// 实测（`kokoro-probe nan` / `rate`，v1.1-zh int8，CPU）：
+    /// - NaN 总是**从第 0 个采样开始的一整段**，约 0.8~1.2 秒，占整句的 1/3；
+    /// - 它是**被吃掉的那段语音**，不是多余的填充——裁掉开头会少念几个字，
+    ///   所以不能「归零继续用」；
+    /// - 由 (文本, 声音) 这一对决定：同一句同一把声音连试 6 次全坏，
+    ///   而 12 把中文声音里有 5 把在同一句上是干净的。换文本（句首多加一个字）
+    ///   也能变好——底层风格向量是按 token 数取行的。
+    /// - `--threads 1` 更糟（24 次全坏，坏段长达 5 秒），多线程反而压制了它。
+    ///
+    /// 这不是可以忽略的脏数据：WAV 编码时 NaN 会被夹成 ±1.0，
+    /// 存出来就是一整段满刻度方波——听感是一声爆音。必须当失败处理。
+    case corruptedAudio(text: String, nonFiniteSamples: Int, totalSamples: Int)
+
+    /// 引擎返回了「没有声音」的音频（峰值低于阈值）。
+    ///
+    /// 实测与 NaN 是同一类毛病：短句有时返回一段只有底噪的静音，
+    /// 采样全是有限值所以 NaN 检查放过——听感就是这一句凭空消失。
+    /// 正常句子的峰值在 0.19~0.51，0.02 的判定线离得很远，不会误杀。
+    case silentAudio(text: String, peak: Float)
 }
 
 extension KokoroTTSError: CustomStringConvertible {
@@ -77,6 +99,13 @@ extension KokoroTTSError: CustomStringConvertible {
 
         case .emptyAudio(let text):
             return "Kokoro 返回空音频：\"\(text.prefix(20))\""
+
+        case .corruptedAudio(let text, let bad, let total):
+            return "Kokoro 返回了坏音频（\(bad)/\(total) 个采样非有限）：\"\(text.prefix(20))\"。"
+                + "这类失败基本由「文本+声音」决定，重试多半无用，交给降级后端。"
+
+        case .silentAudio(let text, let peak):
+            return "Kokoro 返回了静音（峰值 \(peak)）：\"\(text.prefix(20))\"。交给降级后端。"
         }
     }
 }

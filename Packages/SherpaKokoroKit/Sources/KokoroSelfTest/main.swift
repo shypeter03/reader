@@ -105,17 +105,41 @@ struct Case {
 let voices = KokoroVoice.table(from: report.speakerNames)
 let zhMale = voices.chinese(gender: .male)
 let zhFemale = voices.chinese(gender: .female)
+
+/// 自测要跟生产用同一把声音，否则测的是不会上线的音色。
+/// App 侧映射在 `KokoroVoiceMap`（本包不能依赖 App target），这里只镜像它的首选名，
+/// 找不到就退回同性别第一把——真掉进退回分支时下面的日志会显式打出来。
+/// 必须走 `first(named:)`（按首选名顺序找），不能写成 `pool.first { names.contains(...) }`：
+/// 后者是按 sid 顺序遍历池子，会把「第一位」的优先级悄悄丢掉（实测 sid 71 抢在 101 前面）。
+let preferredNarratorNames = ["zm_098", "zm_033", "zm_034", "zm_yunyang"]
+let preferredFemaleNames = ["zf_042", "zf_xiaoxiao"]
+let preferredSecondMaleNames = ["zm_054", "zm_yunjian"]
+
+let narrator = zhMale.first(named: preferredNarratorNames) ?? zhMale.first
+let female = zhFemale.first(named: preferredFemaleNames) ?? zhFemale.first
+let secondMale = zhMale.first(named: preferredSecondMaleNames)
+    ?? zhMale.first { $0.sid != narrator?.sid }
+
 print("""
 [声音表] 由 model metadata 解析：\(voices.count) 条（引擎报 \(report.speakerCount)）\
  中文男 \(zhMale.count) / 中文女 \(zhFemale.count)
         sid 0=\(voices.first?.name ?? "?") … sid \(voices.count - 1)=\(voices.last?.name ?? "?")
-        旁白取 \(zhMale.first?.name ?? "?")(sid \(zhMale.first?.sid ?? -1))，\
- 女声取 \(zhFemale.first?.name ?? "?")(sid \(zhFemale.first?.sid ?? -1))
+        旁白取 \(narrator?.name ?? "?")(sid \(narrator?.sid ?? -1))，\
+ 女声取 \(female?.name ?? "?")(sid \(female?.sid ?? -1))，\
+ 备选男声 \(secondMale?.name ?? "?")(sid \(secondMale?.sid ?? -1))
 """)
 
-guard let narrator = zhMale.first, let female = zhFemale.first,
-      let secondMale = zhMale.dropFirst().first ?? zhMale.last else {
+guard let narrator, let female, let secondMale else {
     print("[FAIL] 模型里没有中文男/女声，无法测 voice 切换")
+    exit(1)
+}
+
+// 拉丁片段清洗会改变「实际念出来的内容」，静默回归靠耳朵发现不了，所以在自测里钉死。
+let (washedText, washedDropped) = KokoroSpeechText.speakable("门口的 MP3 在放 infor- mation 音乐。")
+print("[清洗] 吞掉 \(washedDropped) → 「\(washedText)」")
+guard washedDropped == ["MP3", "infor", "mation"], !washedText.contains("MP3"),
+      KokoroSpeechText.speakable("Hello world.").1.isEmpty else {
+    print("[FAIL] 拉丁片段清洗规则与预期不符：\(washedDropped) / \(washedText)")
     exit(1)
 }
 

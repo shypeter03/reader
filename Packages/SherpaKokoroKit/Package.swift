@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .library(name: "SherpaKokoroKit", targets: ["SherpaKokoroKit"]),
         .executable(name: "kokoro-selftest", targets: ["KokoroSelfTest"]),
+        .executable(name: "kokoro-probe", targets: ["KokoroProbe"]),
     ],
     dependencies: [
         // k2-fsa 官方 SwiftPM 入口：仓库根的 Package.swift 已经带好
@@ -28,6 +29,16 @@ let package = Package(
         .executableTarget(
             name: "KokoroSelfTest",
             dependencies: ["SherpaKokoroKit"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // 诊断工具（不进 App）：量音色明暗/沙哑、看 sherpa 内部把一句切成了几段。
+        .executableTarget(
+            name: "KokoroProbe",
+            dependencies: [
+                "SherpaKokoroKit",
+                // RawProbe 直接打 C 接口取未过滤的采样（诊断用，不进 App）。
+                .product(name: "sherpa-onnx", package: "sherpa-onnx")
+            ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
     ]

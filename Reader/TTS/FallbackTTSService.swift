@@ -2,11 +2,16 @@
 //  FallbackTTSService.swift
 //  Reader
 //
-//  TTS 降级链：优先用主后端（Kokoro），它抛错时改用备用后端（Edge TTS）。
+//  TTS 降级链：优先用主后端，它抛错时改用备用后端。当前是 Edge 为主、Kokoro 兜底
+//  （``TTSEngineType`` 选 `.sherpaKokoro` 时两者反向）。
 //
-//  为什么需要：Kokoro 的权重是 App 之外的资源，可能没被 folder reference 拷进来、
-//  可能在内存紧张时创建引擎失败、也可能某一句本地推理出问题。任何一种都会让
-//  「这一章一句都读不出来」。Edge TTS 走网络，音质一般，但几乎总能把话说完。
+//  为什么需要：任何一边单独坏掉都不该让整章静音。Edge 是网络后端，可能没网、可能被
+//  服务端拒；Kokoro 的权重在 App 之外，可能没被 folder reference 拷进来、可能在内存
+//  紧张时创建引擎失败、也可能某一句本地推理出问题。
+//
+//  两个后端各自认识自己的声音：传给它们的 `voiceID` 都是 ``VoiceManager`` 那套
+//  Qwen3 说话人名，映射分别在 ``EdgeTTSService/resolveVoice(_:)`` 与
+//  ``KokoroVoiceMap`` 里做，这一层不做翻译——所以换主备顺序不需要改这里。
 //
 //  这一层不调用任何 Qwen3-TTS 逻辑；Qwen3-TTS 走的是另一条完整后端
 //  （``TTSEngineType/qwen3``），不参与降级。
@@ -21,9 +26,13 @@ actor FallbackTTSService: TTSService {
 
     /// 主后端连续失败多少次后，本进程不再试它。
     ///
-    /// 一章几百句，每句都先失败一次等于把整章合成时间翻倍；而「连续 8 句都失败」
-    /// 已经说明问题是结构性的（权重缺失 / 模型不匹配 / 引擎起不来），不会自己好。
-    static let primaryFailureThreshold = 8
+    /// 一章几百句，每句都先失败一次等于把整章合成时间翻倍；而「连续几句都失败」
+    /// 已经说明问题是结构性的（权重缺失 / 模型不匹配 / 引擎起不来 / 网络不通），
+    /// 不会自己好。
+    ///
+    /// 4 而不是更早的 8：主后端现在是 Edge，一次失败最坏要等
+    /// `超时 × 句内重试` 秒，8 句就是几分钟的静音才轮到本地出声。
+    static let primaryFailureThreshold = 4
 
     private var primaryFailures = 0
     private var primarySkipped = false
@@ -36,36 +45,6 @@ actor FallbackTTSService: TTSService {
     ) {
         self.primary = primary
         self.backup = backup
-    }
-
-    /// 备用后端用的是 Edge，所以这里必须把 Qwen3 的 speaker 名换成 Edge 的 voice 名。
-    /// Edge 收到 `<voice name="Ryan">` 这种不认识的名字会让整次请求失败，
-    /// 降级就等于没降成——所以这里必须**穷尽**，绝不把未知名字直接透传给 Edge。
-    private static let edgeVoices: [String: String] = [
-        "Uncle_Fu": EdgeTTSService.Voice.yunyang,   // 旁白/年长男
-        "Ryan": EdgeTTSService.Voice.yunxi,
-        "Aiden": EdgeTTSService.Voice.yunxi,
-        "Dylan": EdgeTTSService.Voice.yunxi,
-        "Eric": EdgeTTSService.Voice.yunjian,
-        "Vivian": EdgeTTSService.Voice.xiaoxiao,
-        "Serena": EdgeTTSService.Voice.xiaoyi,
-    ]
-
-    static func backupVoice(for voiceID: String) -> String {
-        let trimmed = voiceID.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let mapped = edgeVoices[trimmed] { return mapped }
-        if EdgeTTSService.Voice.all.contains(where: { $0.id == trimmed }) { return trimmed }
-        if trimmed == "narrator" || trimmed.isEmpty { return EdgeTTSService.Voice.yunyang }
-
-        // 角色表里可能有历史遗留的自定义 voiceID：按字节确定性散列挑一把，
-        // 同一角色每次都落到同一个声音，不会出现同一角色两句换一个嗓。
-        let pool = EdgeTTSService.Voice.all.map(\.id)
-        var acc = 0
-        for byte in trimmed.utf8 {
-            acc = (acc &* 31 &+ Int(byte)) % 1_000_003
-        }
-        return pool[acc % pool.count]
     }
 
     // MARK: - TTSService
@@ -116,7 +95,7 @@ actor FallbackTTSService: TTSService {
         do {
             let data = try await backup.synthesize(
                 text: text,
-                voiceID: Self.backupVoice(for: voiceID),
+                voiceID: voiceID,
                 emotion: emotion,
                 intensity: intensity,
                 speed: speed,
@@ -125,8 +104,8 @@ actor FallbackTTSService: TTSService {
             )
             if !didLogSwitch {
                 didLogSwitch = true
-                print("[TTS降级] 已切到备用后端（Edge TTS）继续朗读。"
-                    + "注意：备用后端的音色与本角色的 Kokoro 声音不会一致。")
+                print("[TTS降级] 已切到备用后端继续朗读。"
+                    + "注意：备用后端的音色与本角色的主后端声音不会一致。")
             }
             return data
         } catch let backupError {
@@ -137,13 +116,18 @@ actor FallbackTTSService: TTSService {
 
     // MARK: - Unload
 
-    /// 供 `TTSGenerator.unloadModel()` 穿透包装层。备用后端是无状态的，不用管。
+    /// 供 `TTSGenerator.unloadModel()` 穿透包装层。
+    ///
+    /// 两个槽都要试：主备顺序换过之后本地后端可能在任意一边，只查 primary
+    /// 就等于「卸了个寂寞」，权重继续白占着内存。备用后端是无状态的（Edge），转型自然失败。
     func unloadAll() async {
-        if let kokoro = primary as? SherpaKokoroTTSService {
-            await kokoro.unload()
-        }
-        if let qwen3 = primary as? Qwen3TTSService {
-            await qwen3.unload()
+        for service in [primary, backup] {
+            if let kokoro = service as? SherpaKokoroTTSService {
+                await kokoro.unload()
+            }
+            if let qwen3 = service as? Qwen3TTSService {
+                await qwen3.unload()
+            }
         }
         primaryFailures = 0
         primarySkipped = false

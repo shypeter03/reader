@@ -39,7 +39,7 @@ struct SettingsView: View {
     @AppStorage(
         "ttsEngineType"
     )
-    private var ttsEngineRaw: String = TTSEngineType.sherpaKokoro.rawValue
+    private var ttsEngineRaw: String = TTSEngineType.edge.rawValue
 
     var body: some View {
 
@@ -119,7 +119,7 @@ private extension SettingsView {
             }
 
             Text(
-                kokoroModelStatusText
+                backendStatusText
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -127,8 +127,11 @@ private extension SettingsView {
     }
 
     /// 只在选了 Kokoro 时才提示模型是否就位；默认后端不打扰。
-    private var kokoroModelStatusText: String {
+    private var backendStatusText: String {
         guard ttsEngineRaw == TTSEngineType.sherpaKokoro.rawValue else {
+            if ttsEngineRaw == TTSEngineType.edge.rawValue {
+                return "切换后端需重启 App 生效。Edge TTS 需要联网；连续失败 4 句会自动改用 Kokoro 本地合成。"
+            }
             return "切换后端需重启 App 生效。"
         }
         if let dir = SherpaKokoroTTSService.modelDirectoryIfAvailable() {
