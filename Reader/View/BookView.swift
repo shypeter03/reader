@@ -34,7 +34,7 @@ struct CoverImage: View {
                 )
 
                 Text(title)
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 30, weight: .bold))
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .lineLimit(4)
@@ -137,18 +137,7 @@ struct BookCoverTile: View {
                 y: 4
             )
 
-            Text(book.title)
-                .font(.subheadline)
-                // 固定占两行：否则一行书名的卡片进度条会比两行的往上跳，整行对不齐
-                .lineLimit(2, reservesSpace: true)
-                .multilineTextAlignment(.leading)
-
             HStack(spacing: 7) {
-
-                ProgressView(
-                    value: progress
-                )
-                .controlSize(.mini)
 
                 Text(
                     "\(Int(progress * 100))%"
@@ -360,11 +349,16 @@ private extension BookDetailView {
 
                     if !book.chapters.isEmpty {
 
+                        // 用章自己的标题，不写「第 N 章」：N 是数组下标，和书里印的
+                        // 章号是两套（前言占一格、正文从「第5章」起），并排看着像出错。
                         Text(
-                            "第 \(book.lastReadChapter + 1) 章"
+                            book.chapters.indices.contains(book.lastReadChapter)
+                                ? book.chapters[book.lastReadChapter].title
+                                : book.chapters[0].title
                         )
                         .font(.caption)
                         .opacity(0.8)
+                        .lineLimit(1)
                     }
                 }
 

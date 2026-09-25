@@ -305,7 +305,8 @@ extension EPUBParser {
 
     /// 只解析指定章节
     ///
-    /// 只有用户真正打开章节时才调用。
+    /// 导入时在后台逐章跑完；打开章节只有落库缺失或 ``SentenceSplitter/textVersion``
+    /// 对不上时才回落这里。
     static func loadChapter(
         _ descriptor: ChapterDescriptor
     ) throws -> Chapter {
@@ -375,7 +376,8 @@ extension EPUBParser {
             id: descriptor.id,
             index: descriptor.index,
             title: descriptor.title,
-            sentences: sentences
+            sentences: sentences,
+            textVersion: SentenceSplitter.textVersion
         )
     }
 }

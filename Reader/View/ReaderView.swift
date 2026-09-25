@@ -94,7 +94,10 @@ struct ReaderView: View {
             NavigationStack {
 
                 PlayerView(
-                    player: PlayerManager.shared
+                    player: PlayerManager.shared,
+                    // 弹层只当展示面：会话是阅读页开起来的，续播、落进度、
+                    // 订阅生成结果都在阅读页做，这一页再做一个就成两套进度互相覆盖。
+                    ownsSession: false
                 )
                 .toolbar {
 
@@ -116,13 +119,6 @@ struct ReaderView: View {
 
     private func loadChapter() async {
 
-        let context =
-            StoryContext(
-                characters: [],
-                recentCharacters: [],
-                recentEvents: []
-            )
-
         let currentIndex =
             book.chapters.firstIndex {
                 $0.id == chapterDescriptor.id
@@ -130,54 +126,21 @@ struct ReaderView: View {
 
         let player = PlayerManager.shared
 
-        player.configure(
-            chapters: book.chapters,
-            currentIndex: currentIndex
-        )
-
-        player.onAudioStarted = { sentenceIndex in
-            Task {
-                await pipeline.recordPlaybackStarted(
-                    bookID: book.id,
-                    chapterID: chapterDescriptor.id,
-                    sentenceIndex: sentenceIndex
-                )
-            }
-        }
-
-        setupNextChapterCallback(
-            player: player,
-            context: context
-        )
-
         do {
 
-            // This returns raw text immediately. AI/TTS updates arrive through a
-            // separate stream and never decide whether the reader can open.
-            let initial = try await pipeline.openChapter(
-                chapterDescriptor,
-                bookID: book.id,
-                context: context
+            // openChapter 立刻返回正文；AI/TTS 的结果走下面那条流更新，
+            // 绝不参与「这一章能不能打开」的判断。装配（书单、下一章回调、
+            // 排产提示）在 PlayerManager.start 里，和播放页共用。
+            let initial = try await player.start(
+                book: book,
+                chapter: chapterDescriptor,
+                // 只有「接着上次那章」才恢复句序；另开一章从章首读起。
+                restoreTo: currentIndex == book.lastReadChapter
+                    ? book.lastReadSentence : nil,
+                pipeline: pipeline
             )
+
             self.chapter = initial
-            player.load(chapter: initial)
-
-            // 只有「接着上次那章」才恢复句序；另开一章从页首读起。
-            if currentIndex == book.lastReadChapter,
-               book.lastReadSentence > 0 {
-
-                let saved = min(
-                    book.lastReadSentence,
-                    max(initial.sentences.count - 1, 0)
-                )
-
-                player.restoreSentenceIndex(saved)
-
-                // 不走 onChange（位置是在这个视图装好监听之前就设好的），
-                // 手动跑一次同样的动作：否则调度器还按章首排产，
-                // 恢复到的那一句会一直等不到音频。
-                onSentenceChanged(saved)
-            }
 
             lastPersistedSentence = player.currentSentenceIndex
 
@@ -195,45 +158,6 @@ struct ReaderView: View {
                 "章节加载失败:",
                 error
             )
-        }
-    }
-
-    /// 动态解析「下一章」：优先缓存/后台任务，缺失才现场生成；
-    /// 同时链式预处理再下一章。索引从 PlayerManager 实时读取，
-    /// 因此跨章推进后无需重新注册。
-    private func setupNextChapterCallback(
-        player: PlayerManager,
-        context: StoryContext
-    ) {
-
-        let chapters = book.chapters
-        let bookID = book.id
-        let pipeline = self.pipeline
-
-        // 闭包存在 player 自己身上，强引用会把单例和自己缠成一圈
-        weak var weakPlayer = player
-
-        player.onNeedNextChapter = {
-
-            guard let player = weakPlayer else {
-                return nil
-            }
-
-            let nextIndex = player.currentChapterIndex + 1
-
-            guard nextIndex < chapters.count else {
-                return nil
-            }
-
-            let descriptor = chapters[nextIndex]
-
-            let next = await pipeline.resolveNext(
-                descriptor,
-                bookID: bookID,
-                context: context
-            )
-
-            return next
         }
     }
 
@@ -297,6 +221,27 @@ private extension ReaderView {
             .inline
         )
         .toolbar {
+
+            // 章节名居中：书本里标题在页面中轴上，导航栏默认左对齐是 App 的读法。
+            // navigationTitle 保留，它管 VoiceOver 的屏幕标题。
+            ToolbarItem(
+                placement: .principal
+            ) {
+                Text(
+                    chapter.title
+                )
+                .font(
+                    .system(
+                        size: 15,
+                        weight: .semibold
+                    )
+                )
+                .lineLimit(1)
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: .center
+                )
+            }
 
             ToolbarItem(
                 id: "player",
@@ -384,6 +329,7 @@ private extension ReaderView {
                     sentences: chapter.sentences,
                     positions: positions,
                     bodySize: layout.bodySize,
+                    chapterTitle: chapter.title,
                     activePosition: player.currentSentenceIndex,
                     tap: { position in
                         player.playSentence(at: position)
@@ -463,7 +409,8 @@ private extension ReaderView {
         let next = PageLayout.paginate(
             chapter.sentences,
             in: size,
-            scale: fontScale
+            scale: fontScale,
+            chapterTitle: chapter.title
         )
 
         layout = next
@@ -491,16 +438,7 @@ private extension ReaderView {
         persistProgress()
 
         Task {
-            let idx = book.chapters.firstIndex {
-                $0.id == chapterDescriptor.id
-            } ?? 0
-            await pipeline.updateReadingPosition(
-                bookID: book.id,
-                chapterID: chapterDescriptor.id,
-                sentenceIndex: newIndex,
-                nextChapterID: idx + 1 < book.chapters.count ? book.chapters[idx + 1].id : nil,
-                prevChapterID: idx > 0 ? book.chapters[idx - 1].id : nil
-            )
+            await player.reportPosition(newIndex)
         }
 
         guard autoFollow else {

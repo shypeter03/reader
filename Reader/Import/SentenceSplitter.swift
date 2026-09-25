@@ -9,6 +9,13 @@ import Foundation
 
 enum SentenceSplitter {
 
+    /// 正文口径版本。**改动了任何一句正文的切法**（本文件的规则、`HTMLTextExtractor`
+    /// 取文、`EPUBParser.clean`）都要 +1。
+    ///
+    /// 存在的理由：正文只在导入时后台解析一次并落库，打开章节不再跑 parser，
+    /// 旧书的 chapter.json 里没有字段可对（读成 0），版本对不上才回落解析器重切一遍。
+    static let textVersion = 1
+
     /// 句子边界。
     ///
     /// 刻意**不含**「：」「；」及半角形式：它们后面必然还有话，从那里切开只能得到
@@ -54,7 +61,7 @@ enum SentenceSplitter {
         chapterIndex: Int = 0
     ) -> [Sentence] {
 
-        var result: [String] = []
+        var result: [(text: String, startsParagraph: Bool)] = []
         // 只有「一个字的正文都没有」的片段（独立成段的收尾引号）才允许跨段并，
         // 它身上没有任何内容，并到哪儿都不会改归属；并进前一句最贴合原意。
         var danglingMark = ""
@@ -71,7 +78,7 @@ enum SentenceSplitter {
 
             if pieces.count == 1, spokenCharacterCount(pieces[0]) == 0 {
                 if var last = result.popLast() {
-                    last += pieces[0]
+                    last.text += pieces[0]
                     result.append(last)
                 } else {
                     danglingMark = pieces[0]
@@ -79,18 +86,22 @@ enum SentenceSplitter {
                 continue
             }
 
-            result.append(contentsOf: pieces)
+            // 每段的第一句才是段首。段内其余句子接着排，不再各自缩进。
+            for (offset, piece) in pieces.enumerated() {
+                result.append((piece, offset == 0))
+            }
         }
 
-        if !danglingMark.isEmpty { result.append(danglingMark) }
+        if !danglingMark.isEmpty { result.append((danglingMark, true)) }
 
         return result
             .enumerated()
             .map { index, value in
                 Sentence(
                     index: index,
-                    text: value,
-                    chapterIndex: chapterIndex
+                    text: value.text,
+                    chapterIndex: chapterIndex,
+                    startsParagraph: value.startsParagraph
                 )
             }
     }

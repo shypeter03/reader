@@ -79,6 +79,9 @@ actor BookStore {
         sentenceIndex: Int
     ) {
         loadIfNeeded()
+        // 「上次在读哪本」单独记一个键：换了一本书但章/句数字恰好相同，
+        // 下面那个「值没变就不写」会直接 return，续播就会回到旧的那本书上。
+        UserDefaults.standard.set(bookID.uuidString, forKey: Self.lastReadBookKey)
         guard let index = books.firstIndex(where: { $0.id == bookID }) else {
             return
         }
@@ -90,6 +93,20 @@ actor BookStore {
         books[index].lastReadSentence = sentenceIndex
         saveToDisk()
     }
+
+    /// 上次落过位置的那本书。没有标记（第一次用）或书已被删掉时返回 nil。
+    func lastReadBook() -> Book? {
+        loadIfNeeded()
+        guard let raw = UserDefaults.standard.string(forKey: Self.lastReadBookKey),
+              let id = UUID(uuidString: raw) else {
+            return nil
+        }
+        return books.first { $0.id == id }
+    }
+
+    /// 记在 UserDefaults 而不是给 `Book` 加字段：书单是整份 JSON 编码的，
+    /// 新增一个非可选字段会让现存 books.json 直接解码失败。
+    private static let lastReadBookKey = "readerLastReadBookID"
 
     // MARK: - Persistence
 
@@ -119,7 +136,7 @@ actor BookStore {
         do {
             let data = try JSONEncoder().encode(books)
             try data.write(to: booksFileURL)
-            print("BookStore: 保存了 \(books.count) 本书")
+            // 成功不打：读阅读进度时每 8 句就落一次盘，打出来只会淹掉日志
         } catch {
             print("BookStore: 保存失败 - \(error)")
         }

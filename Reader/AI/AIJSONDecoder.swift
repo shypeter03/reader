@@ -57,9 +57,9 @@ enum AIJSONDecoder {
                 error
             )
 
+            // 只带节选：整份输出能有几十 KB，日志里读到它就把后面的现场冲掉了
             print(
-                "原始内容:",
-                json
+                "原始内容: \(json.prefix(500))"
             )
 
             throw AIError.invalidJSON

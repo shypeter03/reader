@@ -24,6 +24,11 @@ final class ReaderContainer {
         // 旧布局的生成物在新路径下一条都读不到，启动时删一次再往下建 store。
         ReaderCache.migrateLegacyLayoutOnce()
 
+        // 「每次部署都丢内容」的现场取证：三棵树谁在谁不在、是谁刚刚才建的。
+        // 要遍历几棵目录树，所以甩到后台，不占启动路径。
+        Task.detached(priority: .utility) {
+            ReaderCache.logPersistenceDiagnostics()
+        }
         // MARK: - AI Analyzer (Qwen3-0.6B)
 
         let aiService =

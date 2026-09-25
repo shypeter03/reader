@@ -266,20 +266,64 @@ actor ReaderPipeline {
     /// always-non-empty analysis queue keeps the LLM loaded and stealing the GPU
     /// from the TTS that the user is actually waiting on.
     private func processImport(_ book: Book) async {
+        var parsed = 0
         for descriptor in book.chapters {
             if Task.isCancelled { return }
+            // 导入会重复提交（清完音频与标注后要重新铺正文）：口径没变的章节直接跳过，
+            // 否则一次重复提交就把这本书已完成的标注全冲掉了。
+            if let saved = await chapterStore.load(bookID: book.id, chapterID: descriptor.id),
+               saved.textVersion == SentenceSplitter.textVersion { continue }
             guard let chapter = try? EPUBParser.loadChapter(descriptor) else { continue }
             try? await chapterStore.save(chapter: chapter, bookID: book.id); await cache.set(chapter)
+            parsed += 1
         }
-        print("[Import] 正文落库完成：\(book.title)（\(book.chapters.count) 章，分析按章节打开时排产）")
+        print("[Import] 正文落库完成：\(book.title)（\(parsed)/\(book.chapters.count) 章新解析，分析按章节打开时排产）")
     }
 
-    /// The only chapter-open entry point: parser -> immediate text -> promotion.
+    /// The only chapter-open entry point: parsed text -> promotion.
     func openChapter(_ descriptor: ChapterDescriptor, bookID: UUID, context _: StoryContext) async throws -> Chapter {
         await start()
-        let raw = try EPUBParser.loadChapter(descriptor); let chapter = await hydrate(raw, bookID: bookID)
-        try? await chapterStore.save(chapter: chapter, bookID: bookID); await cache.set(chapter)
+        let chapter = try await loadParsedChapter(descriptor, bookID: bookID)
         return await promote(chapter: chapter, bookID: bookID, sentence: 0)
+    }
+
+    /// 正文取导入时后台解析落库的那一份，点开章节不再跑 XML 解析。
+    /// 只有落库缺失（后台还没排到、清过缓存）或断句口径对不上（规则改过）才回落解析器。
+    private func loadParsedChapter(_ descriptor: ChapterDescriptor, bookID: UUID) async throws -> Chapter {
+        if let saved = await chapterStore.load(bookID: bookID, chapterID: descriptor.id),
+           saved.textVersion == SentenceSplitter.textVersion {
+            return await purgeReclaimedAudio(saved, bookID: bookID)
+        }
+        let raw = try EPUBParser.loadChapter(descriptor)
+        let chapter = await hydrate(raw, bookID: bookID)
+        try? await chapterStore.save(chapter: chapter, bookID: bookID); await cache.set(chapter)
+        return chapter
+    }
+
+    /// 走落库这条路就没有 parser 兜着了，而音频住在 `Library/Caches` 下——系统随时
+    /// 能回收它。留着指向空气的 `audioURL`，播放器会直接跳过这一句，而 ``enqueueTTS``
+    /// 见 audioURL 非空也不排产，句子就永久静音。排产记录同样要退回 pending：
+    /// 任务还是 .completed 的话 `upsert` 认为做过，重排不进去。
+    private func purgeReclaimedAudio(_ chapter: Chapter, bookID: UUID) async -> Chapter {
+        var chapter = chapter
+        var reclaimed: [Int] = []
+        for i in chapter.sentences.indices {
+            guard let url = chapter.sentences[i].audioURL,
+                  !FileManager.default.fileExists(atPath: url.path) else { continue }
+            chapter.sentences[i].audioURL = nil
+            chapter.sentences[i].duration = nil
+            chapter.sentences[i].audioStatus = .pending
+            reclaimed.append(i)
+        }
+        guard !reclaimed.isEmpty else { return chapter }
+        for i in reclaimed { await store.reopenTTS(chapterID: chapter.id, sentenceIndex: i) }
+        chapter.ttsStatus = .partial
+        chapter.audioStatus = .generating
+        try? await chapterStore.save(chapter: chapter, bookID: bookID)
+        await cache.set(chapter)
+        emit(chapter)
+        print("[Cache] chapter=\(chapter.index) 有 \(reclaimed.count) 句音频已被系统回收，退回待合成重排")
+        return chapter
     }
     func resolveNext(_ descriptor: ChapterDescriptor, bookID: UUID, context: StoryContext) async -> Chapter? { try? await openChapter(descriptor, bookID: bookID, context: context) }
     func unloadModel() async { await analyzer.unloadModel(); await generator.unloadModel() }
@@ -302,7 +346,9 @@ actor ReaderPipeline {
 
     func chapterUpdates(_ id: UUID) -> AsyncThrowingStream<Chapter, Error> {
         AsyncThrowingStream { continuation in
-            let token = UUID(); Task { await self.addWatcher(id, token: token, continuation: continuation) }
+            // 这个闭包继承了本 actor 的隔离（非 Sendable、非逃逸），Task 也在同一隔离域里，
+            // 所以再加 await 是空转——编译器会报「await 里没有异步操作」。
+            let token = UUID(); Task { self.addWatcher(id, token: token, continuation: continuation) }
             continuation.onTermination = { _ in Task { await self.removeWatcher(id, token: token) } }
         }
     }
@@ -490,7 +536,11 @@ actor ReaderPipeline {
         }
         let snapshot = await budget.reserved
         let available = await budget.availableBytes
-        MemoryProbe.log("Scheduler start \(job.id) pri=\(job.priority) active=\(beforeMemory.active / 1_048_576)MB peak=\(beforeMemory.peak / 1_048_576)MB | budget reserved=\(snapshot / 1_048_576)MB available=\(available / 1_048_576)MB estimate=\(job.memoryBytes / 1_048_576)MB")
+        // 只有 LLM 批次值得报内存：TTS 任务一句一个，逐句打会把这段日志冲成噪声。
+        // 预估和实际对不上时另有 [Memory] estimate mismatch 那行兜底。
+        if job.type == .analysisBatch {
+            MemoryProbe.log("Scheduler start \(job.id) pri=\(job.priority) active=\(beforeMemory.active / 1_048_576)MB peak=\(beforeMemory.peak / 1_048_576)MB | budget reserved=\(snapshot / 1_048_576)MB available=\(available / 1_048_576)MB estimate=\(job.memoryBytes / 1_048_576)MB")
+        }
         defer { Task { await self.budget.release(job.memoryBytes) } }
         do {
             guard var chapter = await chapterStore.load(bookID: job.bookID, chapterID: job.chapterID) else { throw CocoaError(.fileNoSuchFile) }
@@ -500,14 +550,25 @@ actor ReaderPipeline {
                 // §19 interactive 首批拆头：前 2 句先分析、先 emit、先入队 TTS，
                 // 剩余 8 句随后补，TTFA 不再等整批 10 句。
                 let headEnd = job.mode == .interactive && job.batchIndex == 0 ? min(start + 2, end) : end
+                // 「这句是谁说的」由规则定，LLM 只报朗读参数（见 AITools.buildPrompt）。
+                // 窗外句子到这一刻才补上说话人：只在局部副本上做，不写盘、不排 TTS，
+                // 所以不会回到「正则抢先定整章听感」那个坑——本批参数要等下面 LLM
+                // 合并完才落盘排产。
+                let base = await fastAnalyzer.prime(chapter, in: start..<end)
                 var cursor = start
                 while cursor < end {
                     let upper = cursor < headEnd ? headEnd : end
-                    let working = try await analyzer.analyzeBatch(chapter: chapter, range: cursor..<upper, context: StoryContext(characters: [], recentCharacters: [], recentEvents: []))
+                    let working = try await analyzer.analyzeBatch(chapter: base, range: cursor..<upper, context: StoryContext(characters: [], recentCharacters: [], recentEvents: []))
                     // Other workers may complete a different batch while MLX is
                     // awaiting. Merge only this slice into the newest persisted
                     // snapshot instead of overwriting their sentence results.
                     var latest = await chapterStore.load(bookID: job.bookID, chapterID: job.chapterID) ?? working
+                    // 规则补说话人时可能顺手新建了角色：characterID 必须在章节里查得到，
+                    // 否则 resolveVoiceID 认不出这个人，那句会退化成无名男声。
+                    for character in working.characters
+                    where !latest.characters.contains(where: { $0.id == character.id }) {
+                        latest.characters.append(character)
+                    }
                     // +1 余量：readingPositions 是 UI 在句子切换后才回写的，可能落后
                     // 正在播的那一句一句，少了这个余量会把正在播的音频删掉。
                     let heard = (readingPositions[job.chapterID] ?? 0) + 1
@@ -579,7 +640,6 @@ actor ReaderPipeline {
         }
         let afterMemory = MemoryProbe.snapshot()
         updateEstimate(for: job.type, reserved: job.memoryBytes, before: beforeMemory, after: afterMemory)
-        MemoryProbe.log("Scheduler finish \(job.id)")
     }
     /// 标注改动是否会影响合成出来的声音。没影响就别重录：一句要几十秒 GPU
     /// 时间，无谓重录还会让听感中途换人。speed / pitch / voiceStrength 现在
@@ -675,7 +735,15 @@ actor ReaderPipeline {
                 FileManager.default.fileExists(atPath: $0.path)
             } ?? true
             if saved.sentences[i].text == result.sentences[i].text, audioStillThere {
-                result.sentences[i] = saved.sentences[i]
+                // 段落结构来自正文本身，必须留新解析的那份：旧 chapter.json 里
+                // 这个字段可能是缺省值 true，整句覆盖会把排版打回逐句缩进。
+                var merged = saved.sentences[i]
+                merged.startsParagraph = result.sentences[i].startsParagraph
+                result.sentences[i] = merged
+            } else if !audioStillThere {
+                // 音频文件已被回收：这一句保留解析出来的原样（没音频），但排产记录
+                // 还停在 .completed，`upsert` 会认为做过而不重排——不退回 pending 就永远静音。
+                await store.reopenTTS(chapterID: raw.id, sentenceIndex: i)
             }
         }
         return result

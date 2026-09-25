@@ -52,7 +52,7 @@ struct LibraryView: View {
                         )
                 }
             }
-            .navigationTitle("我的小说")
+            .navigationTitle("书库")
             .toolbar {
                 ToolbarItem(
                     placement: .topBarTrailing
@@ -120,6 +120,9 @@ struct LibraryView: View {
                         clearCacheTarget = nil
                         Task {
                             await pipeline.clearMediaCache(bookID: book.id)
+                            // 清理把落库的正文一起删了：重新走一遍导入的后台解析，
+                            // 让点开章节仍然不用等 XML 解析。
+                            await pipeline.submitImport(book)
                         }
                     }
                 }
@@ -438,7 +441,9 @@ private extension LibraryView {
 
     /// 将（可能是 iCloud / 其他 App 提供的）文件读进内存再写入沙箱临时目录，
     /// 强制触发 iCloud 下载，得到可直接解压的本地文件。
-    private static func copyToSandbox(
+    /// nonisolated：这是在 Task.detached 里跑的纯文件 IO，绑在主线程上只会
+    /// 把大文件读取卡回 UI（Swift 6 下更是直接报错）。
+    private nonisolated static func copyToSandbox(
         from url: URL
     ) throws -> URL {
 

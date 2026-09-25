@@ -38,6 +38,10 @@ struct Chapter: Identifiable, Codable, Sendable {
     var analysisStatus: AnalysisStatus
     var ttsStatus: TTSStatus
 
+    /// 正文是按哪一版断句规则切出来的。读路径会直接用落库的正文，不再每次点开
+    /// 都跑 parser，所以规则一变就得有个东西认出旧数据——对不上的章节重解析一次。
+    var textVersion: Int
+
     init(
         id: UUID = UUID(),
         index: Int,
@@ -47,7 +51,8 @@ struct Chapter: Identifiable, Codable, Sendable {
         audioStatus: AudioGenerationStatus = .pending,
         textStatus: TextStatus = .available,
         analysisStatus: AnalysisStatus = .pending,
-        ttsStatus: TTSStatus = .pending
+        ttsStatus: TTSStatus = .pending,
+        textVersion: Int = SentenceSplitter.textVersion
     ) {
         self.id = id
         self.index = index
@@ -58,11 +63,12 @@ struct Chapter: Identifiable, Codable, Sendable {
         self.textStatus = textStatus
         self.analysisStatus = analysisStatus
         self.ttsStatus = ttsStatus
+        self.textVersion = textVersion
     }
 
     enum CodingKeys: String, CodingKey {
         case id, index, title, sentences, characters, audioStatus
-        case textStatus, analysisStatus, ttsStatus
+        case textStatus, analysisStatus, ttsStatus, textVersion
     }
 
     init(from decoder: Decoder) throws {
@@ -76,5 +82,7 @@ struct Chapter: Identifiable, Codable, Sendable {
         textStatus = try c.decodeIfPresent(TextStatus.self, forKey: .textStatus) ?? .available
         analysisStatus = try c.decodeIfPresent(AnalysisStatus.self, forKey: .analysisStatus) ?? .pending
         ttsStatus = try c.decodeIfPresent(TTSStatus.self, forKey: .ttsStatus) ?? .pending
+        // 缺字段就是「规则改过之前存的」，不能沿用当前版本号：兜底成 0 让它重解析一次。
+        textVersion = try c.decodeIfPresent(Int.self, forKey: .textVersion) ?? 0
     }
 }

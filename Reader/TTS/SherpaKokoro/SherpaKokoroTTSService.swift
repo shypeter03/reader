@@ -70,6 +70,9 @@ actor SherpaKokoroTTSService: TTSService {
 
     private var didLogFirstGeneration = false
 
+    /// RTF 高过这条线才打每句详情（正常句子只有统一口径那一行）。
+    private static let rtfDetailThreshold: Double = 1.2
+
     /// 进程驻留内存（phys_footprint）峰值。放在实例上而不是全局变量里：本类是
     /// 进程内单实例，actor 的串行性天然保护它。`MemoryProbe` 读的是 MLX allocator
     /// 的计数器，Kokoro 走 ONNX Runtime、不产生任何 MLX 分配，所以必须另外量。
@@ -210,32 +213,33 @@ actor SherpaKokoroTTSService: TTSService {
         let footprintNow = KokoroProcessMemory.footprintMB()
         peakFootprintMB = max(peakFootprintMB, footprintNow)
 
-        if !didLogFirstGeneration {
-            didLogFirstGeneration = true
-            print("[Kokoro⏱] 首句生成 \(String(format: "%.0f", metrics.generationTime * 1000))ms（含冷启动）")
-        }
-
         // 并行度 = 进程 CPU 秒 / 墙钟秒。≈ 线程数说明「真在算」；明显小于 1 说明
         // 线程被饿着（抢核）或被降频。配上热档和**当前**驻留，才能把
         // 「后面的句子 RTF 涨到 3」归因到 长度 / 抢核 / 降频 / 内存压力 中的哪一个。
+        //
+        // 但这几项每句都打就成了噪声：正常的句子统一口径那行（TTSGenerator）已经
+        // 给了 RTF，这里只在冷启动第一句和 RTF 明显劣化时出详情。
+        // 首尾都打文本：句尾多出怪音（听感像英文单词）只可能来自**文本尾部**的某个
+        // 非中文片段，光看前 8 个字永远定位不到。这里打的是清洗后真正送进去的文本。
         let parallelism = metrics.generationTime > 0
             ? metrics.cpuTime / metrics.generationTime : 0
         let characters = spokenText.filter { $0.isLetter || $0.isNumber }.count
+        let reportDetail = !didLogFirstGeneration || metrics.rtf > Self.rtfDetailThreshold
+        didLogFirstGeneration = true
 
-        // 首尾都打：句尾多出怪音（听感像英文单词）只可能来自**文本尾部**的某个
-        // 非中文片段，光看前 8 个字永远定位不到。这里打的是清洗后真正送进去的文本。
-        print("""
-        [Kokoro⏱] 「\(spokenText.prefix(8))…\(spokenText.suffix(12))」 voice=\(voice.name)(sid \(voice.sid)) \
-        speed=\(String(format: "%.2f", metrics.appliedSpeed)) \
-        字\(characters) \
-        音频 \(String(format: "%.2f", metrics.audioDuration))s \
-        生成 \(String(format: "%.0f", metrics.generationTime * 1000))ms \
-        RTF \(String(format: "%.2f", metrics.rtf)) \
-        并行度\(String(format: "%.2f", parallelism))/\(numThreads)线程 \
-        \(KokoroProcessMemory.thermalState()) \
-        驻留 \(String(format: "%.0f", footprintNow))MB（峰值 \(String(format: "%.0f", peakFootprintMB))MB）
-        """)
-        MemoryProbe.log("Kokoro 单句合成")
+        if reportDetail {
+            print("""
+            [Kokoro⏱] 「\(spokenText.prefix(8))…\(spokenText.suffix(12))」 voice=\(voice.name)(sid \(voice.sid)) \
+            speed=\(String(format: "%.2f", metrics.appliedSpeed)) \
+            字\(characters) \
+            音频 \(String(format: "%.2f", metrics.audioDuration))s \
+            生成 \(String(format: "%.0f", metrics.generationTime * 1000))ms \
+            RTF \(String(format: "%.2f", metrics.rtf)) \
+            并行度\(String(format: "%.2f", parallelism))/\(numThreads)线程 \
+            \(KokoroProcessMemory.thermalState()) \
+            驻留 \(String(format: "%.0f", footprintNow))MB（峰值 \(String(format: "%.0f", peakFootprintMB))MB）
+            """)
+        }
 
         return wav
     }

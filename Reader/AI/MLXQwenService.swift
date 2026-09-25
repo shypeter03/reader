@@ -67,7 +67,9 @@ actor MLXQwenService: AIService {
         }
         session = ChatSession(
             model,
-            generateParameters: Self.makeParameters(),
+            // 常驻 session 只服务 analyzeChapter 那条旧入口；调度器每批都自带
+            // maxTokens 走下面的 batchSession，所以这里给个宽裕的兜底上限就行。
+            generateParameters: Self.makeParameters(maxTokens: 1024),
             additionalContext: [
                 "enable_thinking": false
             ]
@@ -78,9 +80,11 @@ actor MLXQwenService: AIService {
         print("Qwen3-0.6B 加载完成")
     }
 
-    private static func makeParameters() -> GenerateParameters {
+    private static func makeParameters(
+        maxTokens: Int
+    ) -> GenerateParameters {
         GenerateParameters(
-            maxTokens: 4096,
+            maxTokens: maxTokens,
             temperature: 0.1,
             // 位置式 JSON 每批会合法地重复 "n"/null/0.5 等结构 token 十次；
             // 1.5 的惩罚恰好重罚这些最高频 token，导致列错位、字段缺失。
@@ -108,7 +112,8 @@ actor MLXQwenService: AIService {
     // MARK: - Generate
 
     func generate(
-        prompt: String
+        prompt: String,
+        maxTokens: Int
     ) async throws -> String {
 
         if !isLoaded {
@@ -126,7 +131,7 @@ actor MLXQwenService: AIService {
         // 使整章分析内存从 ~3.5GB 线性涨到 ~11.5GB。
         let batchSession = ChatSession(
             model,
-            generateParameters: Self.makeParameters(),
+            generateParameters: Self.makeParameters(maxTokens: maxTokens),
             additionalContext: ["enable_thinking": false]
         )
 
@@ -166,7 +171,7 @@ actor MLXQwenService: AIService {
         var allAnalyzedSentences: [AnalyzedSentence] = []
 
         for (batchIndex, batch) in batches.enumerated() {
-            print("分析批次 \(batchIndex + 1)/\(batches.count)，句子数: \(batch.count)")
+            print("[LLM] 批次 \(batchIndex + 1)/\(batches.count)（\(batch.count) 句）")
 
             let prompt = buildPrompt(
                 chapter: chapter,
@@ -176,10 +181,7 @@ actor MLXQwenService: AIService {
 
             let response = try await session.respond(to: prompt)
 
-            print("========== Batch \(batchIndex + 1) Response ==========")
-            print(response)
-            print("======================================================")
-
+            // 不再整份打印模型输出：解析失败那条路径自己会带原文节选。
             let analysis = parseResponse(response)
 
             allCharacters.append(contentsOf: analysis.characters)

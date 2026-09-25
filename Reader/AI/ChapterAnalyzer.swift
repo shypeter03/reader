@@ -106,11 +106,7 @@ actor ChapterAnalyzer {
                 let sentences = chapter.sentences
                 let total = sentences.count
 
-                print("================================")
-                print("开始 AI 流式分析章节")
-                print("章节：\(chapter.title)")
-                print("句子数量：\(total)")
-                print("================================")
+                print("[LLM] 流式分析章节：\(chapter.title)（\(total) 句）")
 
                 if total == 0 {
                     chapter.audioStatus = .pending
@@ -137,7 +133,7 @@ actor ChapterAnalyzer {
                         let batchSentences = Array(sentences[start..<end])
                         batchNumber += 1
 
-                        print("处理批次 \(batchNumber)，句子 \(start)-\(end - 1)")
+                        print("[LLM] 批次 \(batchNumber) 句 \(start)-\(end - 1)")
 
                         let batchChapter = Chapter(
                             id: chapter.id,
@@ -153,8 +149,6 @@ actor ChapterAnalyzer {
                             context: context
                         )
 
-                        MemoryProbe.log("Batch \(batchNumber) 分析前")
-
                         let result = try await analyzeBatch(
                             basePrompt: prompt,
                             expectedIndices: batchSentences.map { $0.index },
@@ -167,6 +161,7 @@ actor ChapterAnalyzer {
                             range: start..<end
                         )
 
+                        // 「分析前」不再单列：调度器起批时那条 [Memory] 就是同一份数据
                         MemoryProbe.log("Batch \(batchNumber) 分析后")
 
                         continuation.yield(
@@ -205,9 +200,16 @@ actor ChapterAnalyzer {
         var bestResult: AIAnalysisResult?
         var bestIssueCount = Int.max
 
+        // 一行四个字段约 8 个 token，24 是留余量的上界。不再用 4096：那等于允许模型
+        // 在一批 10 句上跑进重复循环，KV 一路涨到几个 GB，还要几十秒才停。
+        let maxTokens = 32 + expectedIndices.count * 24
+
         for attempt in 1 ... 2 {
 
-            let response = try await ai.generate(prompt: prompt)
+            let response = try await ai.generate(
+                prompt: prompt,
+                maxTokens: maxTokens
+            )
             let (result, issues) = AITools.parseResponse(
                 response,
                 expectedIndices: expectedIndices
@@ -225,13 +227,12 @@ actor ChapterAnalyzer {
             guard attempt < 2 else { break }
 
             let summary = issues.prefix(4).joined(separator: "；")
-            let indices = expectedIndices.map(String.init).joined(separator: ",")
+            let indices = expectedIndices.map(String.init).joined(separator: " ")
             prompt = basePrompt + """
 
-            上一份输出无效（\(summary)）。丢弃它并从头重新输出完整 JSON；不要修补、不要解释。
-            外层数组必须含恰好 \(expectedIndices.count) 行，第一列必须依次为 [\(indices)]。
-            每行都必须恰好 7 个元素：[index,"n"或"d",name或null,emotion,0...1,0.7...1.3,-0.2...0.2]。
-            任何不确定项都用合法保守值 [index,"n",null,"neutral",0.5,1.0,0.0]，绝不能遗漏字段或提前结束数组。
+            上一份输出无效（\(summary)）。丢弃它并从头重新输出，不要修补、不要解释。
+            共 \(expectedIndices.count) 行，每行 4 项、空格分开：序号 情绪 情绪强度 声音力度
+            序号依次为 \(indices)；情绪只能是 neutral happy sad angry surprised fearful excited calm tense 之一；两个数字都在 0~1，不加引号、不加方括号。
             """
             print("↻ 批次重试生成（上轮问题 \(issues.count) 处）")
         }
@@ -272,37 +273,23 @@ actor ChapterAnalyzer {
 
             var updated = sentence
 
-            updated.type = analysis.type
-            updated.speaker = analysis.speaker
-
-            if analysis.speaker == .character {
-
-                let characterName = analysis.characterName
-                updated.characterName = characterName
-
-                if let characterName {
-                    updated.characterID = chapter.characters.first {
-                        $0.name == characterName
-                    }?.id
-                } else {
-                    updated.characterID = nil
-                }
-
-            } else {
-
-                updated.characterName = nil
-                updated.characterID = nil
-            }
-
+            // 只有这 3 项来自模型：type / speaker 交回正则，speed / pitch 跟情绪查表。
             updated.emotion = analysis.emotion
             updated.emotionIntensity = clamp(analysis.emotionIntensity, min: 0, max: 1)
-            updated.speed = clamp(analysis.speed, min: 0.7, max: 1.3)
-            updated.pitch = clamp(analysis.pitch, min: -0.2, max: 0.2)
             updated.voiceStrength = clamp(
                 analysis.voiceStrength,
                 min: AITools.voiceStrengthFloor,
                 max: 1
             )
+            // speed / pitch 跟情绪查表，而不是跟模型：情绪被校准了，语速音调必须一起走，
+            // 否则会出现「angry 却用 calm 的语速」。表就是 Emotion 那一份，
+            // 和正则路径、和旧指令里的「按情绪推荐」完全同源。
+            // 情绪没被改就不动这两列：正则给带「……」的句子留了 -0.03 的收尾减速，
+            // 每次按表重算会把这点差别报成「参数变了」，白重录一句音频。
+            if analysis.emotion != sentence.emotion {
+                updated.speed = analysis.emotion.defaultSpeed
+                updated.pitch = analysis.emotion.defaultPitch
+            }
 
             chapter.sentences[offset] = updated
         }

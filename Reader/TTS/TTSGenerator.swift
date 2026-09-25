@@ -67,24 +67,15 @@ actor TTSGenerator {
 
         var chapter = chapter
 
-        var startTime = CFAbsoluteTimeGetCurrent()
-        
-        
-        // 在 for 循环外声明一个数组，用来收集每次的 sentence
-        var processedSentences: [Sentence] = []
-
         for offset in range {
 
             if Task.isCancelled {
                 throw CancellationError()
             }
-            startTime = CFAbsoluteTimeGetCurrent()
 
             guard offset < chapter.sentences.count else { break }
 
             let sentence = chapter.sentences[offset]
-
-            MemoryProbe.log("Sentence \(sentence.index) TTS 前")
 
             do {
                 chapter.sentences[offset] =
@@ -96,7 +87,6 @@ actor TTSGenerator {
                         audioStore: audioStore,
                         audioNamespace: audioNamespace
                     )
-                processedSentences.append(sentence)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -104,18 +94,7 @@ actor TTSGenerator {
                 // 下次进入章节时磁盘无缓存会自然重试。
                 print("⚠️ 句 \(sentence.index) 合成失败，跳过：\(error.localizedDescription)")
             }
-
-            let endTime = CFAbsoluteTimeGetCurrent()
-            let elapsedMs = (endTime - startTime) * 1000
-            MemoryProbe.log("Sentence \(sentence.index) TTS 后,耗时：\(String(format: "%.2f", elapsedMs)) ms")
         }
-        // 循环结束后统一打印
-        print("====================看看输入的sentence对不对================================")
-        print("处理的句子总数：\(processedSentences.count)")
-        for s in processedSentences {
-            print("Sentence index: \(s.index), text: \(s.text)")
-        }
-        print("=========================================================================")
 
         return chapter
     }
@@ -272,6 +251,8 @@ actor TTSGenerator {
             bookID: bookID
         )
 
+        let synthStart = CFAbsoluteTimeGetCurrent()
+
         let audioData =
             try await tts.synthesize(
                 text: sentence.text,
@@ -283,7 +264,7 @@ actor TTSGenerator {
                 voiceStrength: sentence.voiceStrength
             )
 
-        let saveStart = CFAbsoluteTimeGetCurrent()
+        let genMs = (CFAbsoluteTimeGetCurrent() - synthStart) * 1000
 
         let url =
             try await audioStore.save(
@@ -297,8 +278,11 @@ actor TTSGenerator {
         let duration =
             try await audioDuration(url: url)
 
-        let saveMs = (CFAbsoluteTimeGetCurrent() - saveStart) * 1000
-        print("[TTS⏱] 存盘+读时长 \(String(format: "%.0f", saveMs))ms (句 \(sentence.index), \(audioData.count)B)")
+        // 每句真正合成过一次才打这一行（缓存命中不走这里）：这是各后端统一的
+        // RTF 口径，Edge 这类自己不报耗时的后端也只有在这里才有数。
+        print("[TTS⏱] 句\(sentence.index) 生成 \(String(format: "%.0f", genMs))ms / "
+            + "音频 \(String(format: "%.2f", duration))s / "
+            + "RTF \(String(format: "%.2f", genMs / 1000 / max(0.01, duration)))")
 
         var updated = sentence
         updated.audioURL = url

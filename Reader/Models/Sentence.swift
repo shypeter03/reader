@@ -48,6 +48,11 @@ struct Sentence: Identifiable, Codable, Sendable {
 
     var pitch: Double
 
+    /// 该句是不是一段之首。断句器按 `\n` 分段，段内再切句，所以这个信息只有
+    /// `SentenceSplitter` 知道；没有它，排版只能把每句都当一段处理，
+    /// 一段五句就成了一条条缩进的列表。
+    var startsParagraph: Bool
+
     var audioURL: URL?
 
     var duration: Double?
@@ -67,7 +72,8 @@ struct Sentence: Identifiable, Codable, Sendable {
         emotionIntensity: Double = Emotion.neutral.defaultIntensity,
         speed: Double = Emotion.neutral.defaultSpeed,
         pitch: Double = Emotion.neutral.defaultPitch,
-        voiceStrength: Double = Emotion.neutral.defaultVoiceStrength
+        voiceStrength: Double = Emotion.neutral.defaultVoiceStrength,
+        startsParagraph: Bool = true
     ) {
         self.id = id
         self.index = index
@@ -81,6 +87,7 @@ struct Sentence: Identifiable, Codable, Sendable {
         self.speed = speed
         self.pitch = pitch
         self.voiceStrength = voiceStrength
+        self.startsParagraph = startsParagraph
         self.analysisStatus = .pending
         self.audioStatus = .pending
     }
@@ -88,7 +95,8 @@ struct Sentence: Identifiable, Codable, Sendable {
     init(
         index: Int,
         text: String,
-        chapterIndex: Int
+        chapterIndex: Int,
+        startsParagraph: Bool = true
     ) {
         self.id = Self.deterministicID(
             chapterIndex: chapterIndex,
@@ -106,13 +114,14 @@ struct Sentence: Identifiable, Codable, Sendable {
         self.speed = Emotion.neutral.defaultSpeed
         self.pitch = Emotion.neutral.defaultPitch
         self.voiceStrength = Emotion.neutral.defaultVoiceStrength
+        self.startsParagraph = startsParagraph
         self.analysisStatus = .pending
         self.audioStatus = .pending
     }
 
     enum CodingKeys: String, CodingKey {
         case id, index, text, type, speaker, characterID, characterName, emotion
-        case emotionIntensity, speed, pitch, voiceStrength
+        case emotionIntensity, speed, pitch, voiceStrength, startsParagraph
         case audioURL, duration, analysisStatus, audioStatus
     }
 
@@ -133,6 +142,9 @@ struct Sentence: Identifiable, Codable, Sendable {
         // 旧版 chapter.json 没有这个字段：按情绪给足支撑，别退回虚弱的默认值
         voiceStrength = try c.decodeIfPresent(Double.self, forKey: .voiceStrength)
             ?? emotion.defaultVoiceStrength
+        // 旧版 chapter.json 没有段落标记：退回「每句自成一段」，
+        // 也就是加这个字段之前的排版，宁可难看不要错位。
+        startsParagraph = try c.decodeIfPresent(Bool.self, forKey: .startsParagraph) ?? true
         audioURL = try c.decodeIfPresent(URL.self, forKey: .audioURL)
         duration = try c.decodeIfPresent(Double.self, forKey: .duration)
         analysisStatus = try c.decodeIfPresent(SentenceAnalysisStatus.self, forKey: .analysisStatus) ?? .pending

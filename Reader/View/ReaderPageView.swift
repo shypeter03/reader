@@ -21,6 +21,9 @@ struct ReaderPageBody: View {
 
     let bodySize: CGFloat
 
+    /// 章标题。正文第一句常常就是它本身，要按标题排而不是跟着正文走。
+    let chapterTitle: String
+
     /// 正在朗读的句子下标；nil 表示本页没有正在播的句子
     let activePosition: Int?
 
@@ -30,7 +33,7 @@ struct ReaderPageBody: View {
 
         VStack(
             alignment: .leading,
-            spacing: ReaderTypography.sentenceGap(size: bodySize)
+            spacing: 0
         ) {
 
             if positions.isEmpty, sentences.isEmpty {
@@ -58,7 +61,8 @@ struct ReaderPageBody: View {
 
                     sentenceBlock(
                         sentences[position],
-                        position: position
+                        position: position,
+                        startsPage: position == positions.first
                     )
                 }
             }
@@ -82,10 +86,15 @@ struct ReaderPageBody: View {
     @ViewBuilder
     private func sentenceBlock(
         _ sentence: Sentence,
-        position: Int
+        position: Int,
+        startsPage: Bool
     ) -> some View {
 
         let isActive = position == activePosition
+        let isHeading = ReaderTypography.isChapterHeading(
+            sentence,
+            chapterTitle: chapterTitle
+        )
 
         VStack(
             alignment: .leading,
@@ -109,19 +118,29 @@ struct ReaderPageBody: View {
                     )
             }
 
-            Text(sentence.text)
-                .font(.system(size: bodySize))
+            Text(ReaderTypography.displayText(
+                sentence,
+                chapterTitle: chapterTitle
+            ))
+                .font(
+                    .system(
+                        size: bodySize,
+                        weight: isHeading ? .semibold : .regular
+                    )
+                )
                 .lineSpacing(
                     ReaderTypography.lineSpacing(size: bodySize)
                 )
-                .multilineTextAlignment(.leading)
+                .multilineTextAlignment(
+                    isHeading ? .center : .leading
+                )
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: isHeading ? .center : .leading
+                )
                 .fixedSize(
                     horizontal: false,
                     vertical: true
-                )
-                .padding(
-                    .leading,
-                    ReaderTypography.paragraphIndent(size: bodySize)
                 )
                 .foregroundStyle(
                     isActive
@@ -129,6 +148,14 @@ struct ReaderPageBody: View {
                         : Color.primary.opacity(0.72)
                 )
         }
+        .padding(
+            .top,
+            ReaderTypography.gap(
+                before: sentence,
+                startsPage: startsPage,
+                size: bodySize
+            )
+        )
         .frame(
             maxWidth: .infinity,
             alignment: .leading
@@ -149,6 +176,8 @@ struct ReaderPageView: View {
 
     let bodySize: CGFloat
 
+    let chapterTitle: String
+
     let activePosition: Int?
 
     let tap: (Int) -> Void
@@ -162,6 +191,7 @@ struct ReaderPageView: View {
                 sentences: sentences,
                 positions: positions,
                 bodySize: bodySize,
+                chapterTitle: chapterTitle,
                 activePosition: activePosition,
                 tap: tap
             )

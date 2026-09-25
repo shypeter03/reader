@@ -20,20 +20,11 @@ actor FastChapterAnalyzer {
 
         chapter.audioStatus = .analyzing
 
-        print("================================")
-        print("开始快速分析章节")
-        print("章节：\(chapter.title)")
-        print("句子数量：\(chapter.sentences.count)")
-        print("================================")
-
         for index in chapter.sentences.indices {
             chapter.sentences[index] = annotate(chapter.sentences[index], in: &chapter)
         }
 
         chapter.audioStatus = .pending
-
-        print("快速分析完成")
-        print("================================")
 
         return chapter
     }
@@ -235,8 +226,6 @@ actor FastChapterAnalyzer {
     // MARK: - Emotion Detection
 
     private func detectEmotion(from text: String) -> Emotion {
-
-        let lowercased = text.lowercased()
 
         if text.contains("！") || text.contains("!") {
             if containsKeywords(text, ["怒", "恨", "愤"]) {

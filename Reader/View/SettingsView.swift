@@ -278,6 +278,8 @@ private extension SettingsView {
 
             for book in books {
                 await pipeline.clearMediaCache(bookID: book.id)
+                // 正文跟着清理一起删了：重新排队后台解析，点开章节才不用现算
+                await pipeline.submitImport(book)
             }
 
             cacheBytes = await measureCache()
