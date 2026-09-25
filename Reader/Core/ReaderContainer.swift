@@ -109,7 +109,10 @@ final class ReaderContainer {
                 analyzer: analyzer,
                 fastAnalyzer: fastAnalyzer,
                 generator: generator,
-                chapterStore: chapterStore
+                chapterStore: chapterStore,
+                // 一次只喂一个分析批次：两个 worker 会把 KV 峰值叠成两份，
+                // 而解析已经排在整个后台跑，多一倍并发换不来用户能感知的速度。
+                analysisWorkerCount: 1
             )
     }
 }

@@ -23,22 +23,17 @@ actor EnhancementJobStore {
     }
     func recover() -> [EnhancementJob] {
         for id in jobs.keys where jobs[id]?.state == .running { jobs[id]?.state = .pending; jobs[id]?.startedAt = nil; jobs[id]?.error = "Interrupted by previous app exit" }
-        // 旧版本导入时把整本书的分析批次全压进了队列。它们若原样恢复，队列永远非空：
-        // 分析 worker 一直有活，LLM 也就永远卸不掉。打开章节时会重新排产，直接丢弃安全。
-        var droppedAnalysis = 0
-        for (key, job) in jobs where job.type == .analysisBatch && (job.state == .pending || job.state == .failed) {
-            jobs[key] = nil; droppedAnalysis += 1
-        }
-        // 同理，逐句 TTS 任务也是重开的：promote/updateReadingPosition 会按当前播放
-        // 位置重新排产。留着它们，worker 会被上次会话留下的别的书的后台音频占满
-        // ——单 worker 不能打断在跑的任务，一句被内存压力拖到几十秒时，用户这一章
-        // 就在队尾等好几分钟，看起来就是「点开没声音」。
+        // 整书解析批次原样恢复：它们就是这本书的后台解析进度，杀进程不该从头再来。
+        // 播放路径已经不排解析了（promote 只排音频），丢了就再也没人补。
+        // 逐句 TTS 任务相反，一律丢弃重排：留着 worker 会被上次会话留下的别的书的
+        // 后台音频占满——单 worker 不能打断在跑的任务，一句被内存压力拖到几十秒时，
+        // 用户这一章就在队尾等好几分钟，看起来就是「点开没声音」。
         var droppedTTS = 0
         for (key, job) in jobs where job.type == .ttsSentence && (job.state == .pending || job.state == .failed) {
             jobs[key] = nil; droppedTTS += 1
         }
-        if droppedAnalysis > 0 || droppedTTS > 0 {
-            print("[Scheduler] 丢弃 \(droppedAnalysis) 个整书预热分析批次、\(droppedTTS) 个遗留逐句音频任务（改为打开章节时按需排产）")
+        if droppedTTS > 0 {
+            print("[Scheduler] 恢复 \(jobs.values.filter { $0.state == .pending }.count) 个待跑任务，丢弃 \(droppedTTS) 个遗留逐句音频任务（改为打开章节时按需排产）")
         }
         save(); return jobs.values.filter { $0.state == .pending || $0.state == .failed }
     }
@@ -150,7 +145,17 @@ actor PriorityJobQueue {
     private var pending: [String: EnhancementJob] = [:]
     private var waiters: [CheckedContinuation<EnhancementJob?, Never>] = []
     private var stopped = false
+    /// 挂起 = worker 取不到新任务，但**已经在跑的那一批不会被杀**。
+    /// 这是「用户在听时把 GPU 整块让出去」唯一的实现方式：闸口只在批次开始前
+    /// 看一眼是不够的，一批 10 句要跑几十秒，期间 TTS 全在跟它抢。
+    private var suspended = false
     func enqueue(_ job: EnhancementJob) { guard !stopped else { return }; if var old = pending[job.id] { old.priority = max(old.priority, job.priority); old.mode = job.mode == .interactive ? .interactive : old.mode; pending[job.id] = old } else { pending[job.id] = job }; wake() }
+    func setSuspended(_ value: Bool) {
+        guard suspended != value else { return }
+        suspended = value
+        if !value { wake() }
+    }
+    var isSuspended: Bool { suspended }
     /// 用户切走后，其他章节遗留的 interactive 任务全部降回后台档，
     /// 不再挤占当前章节的 worker 与内存预算。running 中的任务不动。
     func demoteInteractive(except chapterID: UUID) {
@@ -164,6 +169,7 @@ actor PriorityJobQueue {
     func stop() { stopped = true; waiters.forEach { $0.resume(returning: nil) }; waiters.removeAll() }
     private func wake() { while !waiters.isEmpty, let job = take() { waiters.removeFirst().resume(returning: job) } }
     private func take() -> EnhancementJob? {
+        guard !suspended else { return nil }
         guard let job = pending.values.max(by: { $0.priority == $1.priority ? $0.createdAt > $1.createdAt : $0.priority < $1.priority }) else { return nil }
         pending[job.id] = nil; return job
     }
@@ -193,26 +199,38 @@ actor ReaderPipeline {
     private var watchers: [UUID: [UUID: AsyncThrowingStream<Chapter, Error>.Continuation]] = [:]
     private var readingPositions: [UUID: Int] = [:]
     private var interactiveRequests: [UUID: InteractiveRequest] = [:]  // key: bookID
-    // 正在实时收听的章节：LLM 分析批次要为它的 TTS 让路，校准完即卸载腾内存
-    private var liveRead: (bookID: UUID, chapterID: UUID)?
+    /// 最近一次「用户正在收听」的证据：播放位置更新、起播，都在刷新它。
+    /// 分析批次看它是否还在新鲜窗口内决定让不让路——只靠显式的暂停/停止信号不可靠
+    /// （从阅读页退走并不会停播放器），而心跳每句都会来一次。
+    private var lastListeningBeat: Date?
+    /// 已被整书排产解析的书。在旧版本（按需排产年代）导入的书靠这个补排一次。
+    private var analysisArmed: Set<UUID> = []
     /// 已被 worker 取走、尚未跑完的分析批次数（含在缓冲闸口上等待的那些）
     private var analysisJobsActive = 0
     /// 真正在与 TTS 同抢 GPU 的分析批次数：收听期间只放行 1 个
     private var runningAnalysisJobs = 0
+    /// 收听期间分析队列被挂起：worker 取不到新批次，但已经在跑的那一批不杀。
+    /// 闸口必须放在队列上而不是让每批次自己问——真机日志里 `[Gate]` 一次都没出现，
+    /// 因为启动后 `recover()` 立刻把批次交给 worker，那会儿还没有心跳可问。
+    private var analysisSuspended = false
+    /// 盯心跳过期的任务，队列恢复后作废；同一时间只允许一个。
+    private var resumeWatch: Task<Void, Never>?
     // 导入消息箱：submitImport 放入消息后立即返回，由专用消费任务处理
     private var importInbox: [Book] = []
     private var importWaiters: [CheckedContinuation<Book?, Never>] = []
     private var importStopped = false
 
-    /// P0：播放位置之后已备好这么多句音频才放行 LLM 分析，避免两者同抢 GPU。
-    private static let analysisPrefetchDepth = 5
     /// 规则标注只覆盖「正在听的这句 + 往后这么多句」。再远的句子等 LLM 标定：
     /// 正则把单个「！」就推成 0.7 强度（"非常紧张急促，语速加快"），而强指令 +
     /// temperature 0.9 正是这模型输出跑偏音频的条件。
     private static let fastPrimeLookahead = 8
-    /// 等待音频缓冲的上限；超时后照常分析，防止 TTS 长期失败时任务永远饿死。
-    /// 取 60s：让路只推迟「后台校准」，绝不推迟播放本身。
-    private static let analysisGateTimeout: TimeInterval = 60
+    /// 收听的让路上限。真机上门槛是「用户得先把听到的这本放下」，正常几分钟就放行；
+    /// 这个数只在「播放器挂着不动、TTS 又一直失败」时兜底，防止解析永远饿死。
+    private static let analysisStarvationTimeout: TimeInterval = 600
+    /// 心跳多久之内还算「正在收听」。播放位置每句刷一次，暂停/退走后再没人刷，
+    /// 过了这个窗口就认为用户把这本放下了，放行后台解析。取 20s：比一句音频的
+    /// 长度宽得多，也不会让解析在用户只是去倒杯水时饿上半个小时。
+    private static let listeningGrace: TimeInterval = 20
 
     init(analyzer: ChapterAnalyzer, fastAnalyzer: FastChapterAnalyzer, generator: TTSGenerator, chapterStore: ChapterStore, analysisWorkerCount: Int = 2, ttsWorkerCount: Int = 1, memoryBudgetBytes: Int64 = 2 * 1024 * 1024 * 1024, analysisEstimate: Int64 = 600 * 1024 * 1024, ttsEstimate: Int64 = 900 * 1024 * 1024) {
         self.analyzer = analyzer; self.fastAnalyzer = fastAnalyzer; self.generator = generator; self.chapterStore = chapterStore
@@ -230,6 +248,10 @@ actor ReaderPipeline {
     }
     func stop() async {
         workers.forEach { $0.cancel() }; workers.removeAll()
+        // 挂起状态必须跟着复位：队列是长命的 actor，留着 suspended=true 的话，
+        // 下次 start() 后 worker 一个批次也取不到，后台解析就永远醒不过来了。
+        resumeWatch?.cancel(); resumeWatch = nil; analysisSuspended = false
+        await analysisQueue.setSuspended(false)
         await analysisQueue.stop(); await ttsQueue.stop()
         importStopped = true
         importWaiters.forEach { $0.resume(returning: nil) }; importWaiters.removeAll()
@@ -261,10 +283,9 @@ actor ReaderPipeline {
         return await withCheckedContinuation { importWaiters.append($0) }
     }
 
-    /// Import persists raw text only. Analysis is scheduled per chapter when the
-    /// user opens it (plus its neighbours), never as a book-wide eager pass: an
-    /// always-non-empty analysis queue keeps the LLM loaded and stealing the GPU
-    /// from the TTS that the user is actually waiting on.
+    /// 导入 = 正文落库 + 整书解析排产。解析是这本书的后台作业，与「打开哪一章」无关：
+    /// 播放路径上只剩 TTS，两边不再同抢 GPU。批次按章序单调排产，所以进度是
+    /// 「解析到第几章」，中断（杀进程、切走）后从断点续，不重跑已完成的部分。
     private func processImport(_ book: Book) async {
         var parsed = 0
         for descriptor in book.chapters {
@@ -277,7 +298,94 @@ actor ReaderPipeline {
             try? await chapterStore.save(chapter: chapter, bookID: book.id); await cache.set(chapter)
             parsed += 1
         }
-        print("[Import] 正文落库完成：\(book.title)（\(parsed)/\(book.chapters.count) 章新解析，分析按章节打开时排产）")
+        let queued = await armAnalysis(book)
+        print("[Import] 正文落库完成：\(book.title)（\(parsed)/\(book.chapters.count) 章新解析，整书解析批次已排产 \(queued) 个）")
+    }
+
+    /// 打开一本旧书时的补排：这本书可能是在「整书排产」之前导入的，队列里没有它的
+    /// 分析批次，而播放路径已经不排析了——不在这里补，它就永远不会有 LLM 校准。
+    func registerBook(_ book: Book) async {
+        await start()
+        _ = await armAnalysis(book)
+    }
+
+    /// 用户停下（暂停/停止）：心跳立即作废，后台解析不用等新鲜窗口过期。
+    func reportListeningStopped(bookID: UUID) {
+        lastListeningBeat = nil
+        Task { await self.resumeAnalysis(reason: "收听结束 book=\(bookID)") }
+    }
+
+    /// 用户是否还在收听：最近有没有播放心跳。
+    private var isListening: Bool {
+        guard let beat = lastListeningBeat else { return false }
+        return Date().timeIntervalSince(beat) < Self.listeningGrace
+    }
+
+    /// 收听中把分析队列挂起。挂起只是「不再取新批次」，所以权重不能在这里直接卸：
+    /// 在飞的那一批正在用 MLX，生成中途释放权重是崩溃路径。队列没被排空时
+    /// 由那一批结束后的 `unloadAnalyzerIfIdle`（它有挂起分支）来卸。
+    /// `promote`（每句播放心跳都走）与 `recordPlaybackStarted` 都调它，幂等。
+    private func suspendAnalysisForListening() async {
+        guard isListening, !analysisSuspended else { return }
+        analysisSuspended = true
+        await analysisQueue.setSuspended(true)
+        print("[Gate] 用户正在收听 → 挂起分析队列，在跑的批次结束后不再取新任务")
+        if analysisJobsActive == 0, runningAnalysisJobs == 0 {
+            await analyzer.unloadModel()
+            print("[Memory] 挂起且无批次在跑 → 卸载 Qwen3-0.6B，权重内存让给 TTS")
+        }
+        startResumeWatch()
+    }
+
+    private func startResumeWatch() {
+        guard resumeWatch == nil else { return }
+        resumeWatch = Task { await self.waitForBeatToExpire() }
+    }
+
+    private func waitForBeatToExpire() async {
+        while isListening {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        await resumeAnalysis(reason: "心跳过期")
+    }
+
+    private func resumeAnalysis(reason: String) async {
+        resumeWatch = nil
+        guard analysisSuspended else { return }
+        // 放开前再看一眼心跳：从「发现过期」到执行这段之间用户可能已经开播，
+        // 那时放开就是白烧一批 GPU。继续盯着，下一轮过期再放。
+        if isListening {
+            startResumeWatch()
+            return
+        }
+        analysisSuspended = false
+        await analysisQueue.setSuspended(false)
+        let pending = await analysisQueue.pendingCount
+        print("[Gate] \(reason) → 恢复分析队列（排队中 \(pending) 个批次）")
+    }
+
+    /// 按章序把这本书还没排过的分析批次压进队列，返回本次新排的数量。
+    /// 幂等：`upsert` 对 .completed 的任务不动，所以重复调用只会补未完成的部分。
+    private func armAnalysis(_ book: Book) async -> Int {
+        guard !analysisArmed.contains(book.id) else { return 0 }
+        analysisArmed.insert(book.id)
+        var rank = 0
+        var queued = 0
+        for descriptor in book.chapters {
+            guard let chapter = await chapterStore.load(bookID: book.id, chapterID: descriptor.id) else { continue }
+            let (next, enqueued) = await enqueueAnalysis(chapter: chapter, bookID: book.id, rank: rank)
+            rank = next; queued += enqueued
+        }
+        if queued > 0 {
+            print("[Analysis] 《\(book.title)》整书排产：\(queued) 个批次（每批 10 句，只在没有收听时跑）")
+        }
+        // 自愈：队列挂起只该由「正在收听」引起。排产时已经没有心跳却还挂着，
+        // 说明状态对不上（例如 stop/start 的边界），在这里放开，
+        // 不然后台解析会永远醒不过来。
+        if analysisSuspended, !isListening {
+            await resumeAnalysis(reason: "排产时已无收听")
+        }
+        return queued
     }
 
     /// The only chapter-open entry point: parsed text -> promotion.
@@ -339,7 +447,9 @@ actor ReaderPipeline {
         let dropped = await store.dropBook(bookID: bookID)
         await cache.removeAll()
         interactiveRequests[bookID] = nil
-        liveRead = nil
+        lastListeningBeat = nil
+        // 标注和任务记录都被丢了，这本书必须能重新排产解析
+        analysisArmed.remove(bookID)
         print("[Cache] 已清空 book=\(bookID) 的音频与标注：丢弃 \(dropped) 个排队/已完成任务，"
             + "剩余缓存 \(ReaderCache.format(ReaderCache.totalSize()))")
     }
@@ -378,6 +488,8 @@ actor ReaderPipeline {
 
     func recordPlaybackStarted(bookID: UUID, chapterID: UUID, sentenceIndex: Int) {
         let now = Date()
+        lastListeningBeat = now
+        Task { await self.suspendAnalysisForListening() }
         print("[SLA] T5 AVPlayer.play book=\(bookID) chapter=\(chapterID) sentence=\(sentenceIndex) at=\(now.timeIntervalSince1970)")
         guard var rec = interactiveRequests[bookID], rec.chapterID == chapterID, !rec.playLogged else { return }
         rec.playLogged = true
@@ -396,7 +508,7 @@ actor ReaderPipeline {
 
     private func promoteNeighbor(_ id: UUID?, bookID: UUID, base: Int) async {
         guard let id, let chapter = await chapterStore.load(bookID: bookID, chapterID: id) else { return }
-        await enqueueAnalysis(chapter: chapter, bookID: bookID, mode: .background, targetBatch: 0, priorityBase: base)
+        // 邻章只排音频：解析是整书后台作业（armAnalysis），不在这里按打开动作插队
         for i in chapter.sentences.indices where chapter.sentences[i].analysisStatus == .completed {
             await enqueueTTS(chapter: chapter, bookID: bookID, sentence: i, priority: base, mode: .background)
         }
@@ -405,12 +517,12 @@ actor ReaderPipeline {
     @discardableResult
     private func promote(chapter: Chapter, bookID: UUID, sentence: Int) async -> Chapter {
         readingPositions[chapter.id] = sentence
-        liveRead = (bookID, chapter.id)
-        // P0：规则先把播放位置附近这一窗填满（无 GPU、毫秒级），本窗立刻可播；
-        // 窗外的句子保持 pending，由后台 LLM 定参数后再排 TTS。
+        lastListeningBeat = Date()
+        await suspendAnalysisForListening()
+        // 规则先把播放位置附近这一窗填满（无 GPU、毫秒级），本窗立刻可播；
+        // 窗外的句子用「已落库的解析结果」，没解析到的句子只缺校准、不缺参数。
         var ready = await prime(chapter: chapter, bookID: bookID, from: sentence)
         // §19.12 只保留最近一次打开意图：其他章节的 interactive 任务全部降级
-        await analysisQueue.demoteInteractive(except: ready.id)
         await ttsQueue.demoteInteractive(except: ready.id)
         await store.demoteInteractive(except: ready.id)
         let t0 = Date()
@@ -454,10 +566,10 @@ actor ReaderPipeline {
             interactiveRequests[bookID]?.analysisDoneAt = t0
             print("[SLA] T2 分析就绪(规则) chapter=\(ready.index) sentence=\(sentence) elapsed=0.00s")
         }
-        // 700 高于邻章排产的 500/400：正在读的这本先校准，再轮到预取邻居
-        await enqueueAnalysis(chapter: ready, bookID: bookID, mode: .background, targetBatch: sentence / 10, priorityBase: 700)
-        // 只为「参数已就绪」的句子排 TTS：本窗（规则）+ 往轮 LLM 已标定过的。
-        // 窗外 pending 句子由 run() 分析批次合并后自己排，参数作者是 LLM。
+        // 打开章节不再排解析：解析是导入时排的整书后台作业（armAnalysis），
+        // 播放这条路径上只有 TTS。窗口的句子由上面的规则填满，播放头往前推
+        // 一格窗口就跟着滑一格，所以解析没跑到的章节照样能连续播，只是听感没被校准。
+        // 只为「参数已就绪」的句子排 TTS：本窗（规则）+ 解析已跑过的句子。
         for i in ready.sentences.indices where ready.sentences[i].analysisStatus == .completed {
             await enqueueTTS(chapter: ready, bookID: bookID, sentence: i, priority: priority(i, near: sentence), mode: .interactive, requestedAt: t0)
         }
@@ -487,14 +599,21 @@ actor ReaderPipeline {
         print("[Fast] 规则标注窗口 [\(lower),\(upper)) 内 \(missing)/\(window.count) 句耗时 \(String(format: "%.1f", ms))ms → 本窗直接开播，远处句子等 LLM 定参数")
         return primed
     }
-    private func enqueueAnalysis(chapter: Chapter, bookID: UUID, mode: JobPriorityMode, targetBatch: Int, priorityBase: Int? = nil) async {
-        for batch in 0..<((chapter.sentences.count + 9) / 10) {
+    private func enqueueAnalysis(chapter: Chapter, bookID: UUID, rank: Int) async -> (next: Int, enqueued: Int) {
+        let batches = (chapter.sentences.count + 9) / 10
+        var rank = rank
+        var enqueued = 0
+        for batch in 0..<batches {
             let key = "analysis:\(bookID.uuidString):\(chapter.id.uuidString):\(batch)"
-            let decay = abs(batch - targetBatch) * 20
-            let p = priorityBase.map { Swift.max(100, $0 - decay) } ?? (mode == .interactive ? 8_000 - decay : 100)
-            let job = EnhancementJob(id: key, bookID: bookID, chapterID: chapter.id, type: .analysisBatch, batchIndex: batch, sentenceIndex: nil, state: .pending, priority: p, mode: mode, memoryBytes: analysisEstimate, attempts: 0, createdAt: Date(), startedAt: nil, finishedAt: nil, error: nil)
-            let saved = await store.upsert(job); if saved.state == .pending { await analysisQueue.enqueue(saved) }
+            // 整书按章序单调排产：越靠前的章节越先解析，进度才是「解析到第几章」。
+            // 这个数只在分析队列内部比大小；跨类型（和 TTS 抢内存）的排序在 `run`
+            // 的 gatePriority 里另算，别把它当成内存闸口的优先级。
+            let job = EnhancementJob(id: key, bookID: bookID, chapterID: chapter.id, type: .analysisBatch, batchIndex: batch, sentenceIndex: nil, state: .pending, priority: max(1, 100_000 - rank), mode: .background, memoryBytes: analysisEstimate, attempts: 0, createdAt: Date(), startedAt: nil, finishedAt: nil, error: nil)
+            let saved = await store.upsert(job)
+            if saved.state == .pending { await analysisQueue.enqueue(saved); enqueued += 1 }
+            rank += 1
         }
+        return (rank, enqueued)
     }
     private func enqueueTTS(chapter: Chapter, bookID: UUID, sentence: Int, priority: Int, mode: JobPriorityMode, requestedAt: Date = Date()) async {
         guard chapter.sentences.indices.contains(sentence), chapter.sentences[sentence].audioURL == nil else { return }
@@ -520,14 +639,21 @@ actor ReaderPipeline {
         if job.type == .analysisBatch {
             analysisJobPicked = true
             analysisJobsActive += 1
-            guard await waitForAudioHeadroom(job: job) else {
+            guard await waitForListeningToStop(job: job) else {
                 job.state = .pending; job.startedAt = nil; job.error = "等待音频缓冲时被取消"
                 await store.update(job); await analysisQueue.enqueue(job); return
             }
             analysisSlotTaken = true
             runningAnalysisJobs += 1
         }
-        guard await budget.acquire(job.memoryBytes, priority: job.priority) else {
+        // 内存闸口是解析和 TTS **共用**的，两边的优先级数字必须跨类型可比：
+        // 分析批次是 99950 这种五位数，TTS 最高才 10000，于是播放器会排在一个
+        // 它自己挤不进去的分析批次后面一起饿死（`release` 只放队首，队首等不到就
+        // 全体等待）。真机日志里 `budget reserved=1578MB available=469MB` 之后
+        // TTS 停在句121 不再出声，就是这个形状。播放是用户这一秒的体验，
+        // 分析晚跑几十秒无所谓，所以把 TTS 抬到绝对高位。
+        let gatePriority = job.type == .ttsSentence ? job.priority + 1_000_000 : job.priority
+        guard await budget.acquire(job.memoryBytes, priority: gatePriority) else {
             job.state = .failed; job.finishedAt = Date(); job.error = "Memory estimate exceeds global budget"
             await store.update(job); return
         }
@@ -662,49 +788,26 @@ actor ReaderPipeline {
                 != VoiceManager.resolvedVoice(for: updated, in: chapter, bookID: bookID)
     }
 
-    /// P0：LLM 分析与 TTS 共用同一块 GPU，并发时两边耗时一起恶化。规则标注已经
-    /// 保证「有参数就能播」，所以分析批次要为正在收听的章节让路：等播放位置之后
-    /// 已备好足够深的音频缓冲（或该章已无待合成句子）、且没有别的分析批次在跑，
-    /// 再开始。超时仍放行，避免 TTS 长期失败时分析永远饿死。
+    /// 解析与 TTS 彻底分开：只要用户在听，分析批次就等着。两边同抢一块 GPU 就是
+    /// 发烫和内存峰值的来源，而旧版「攒够 5 句音频就插一批」的交错等于谁都没让路。
+    /// 等待前先把模型权重卸掉（约 600MB），收听期间的内存就只剩 TTS 一份。
     /// 返回 false 表示等待中被取消，调用方需把批次退回 pending。
-    private func waitForAudioHeadroom(job: EnhancementJob) async -> Bool {
-        guard let live = liveRead else { return true }
-        let deadline = Date().addingTimeInterval(Self.analysisGateTimeout)
-        var announced = false
+    private func waitForListeningToStop(job: EnhancementJob) async -> Bool {
+        guard isListening else { return true }
+
+        await analyzer.unloadModel()
+        let deadline = Date().addingTimeInterval(Self.analysisStarvationTimeout)
+        print("[Gate] 用户正在收听 → 后台解析让路（模型已卸载，权重内存还给 TTS），最多等 \(Int(Self.analysisStarvationTimeout))s")
 
         while true {
             if Task.isCancelled { return false }
-
-            let state = await audioBufferState(bookID: live.bookID, chapterID: live.chapterID)
-            let bufferDeepEnough = state.readyAhead >= Self.analysisPrefetchDepth || state.pendingTTS == 0
-            if bufferDeepEnough && runningAnalysisJobs == 0 { return true }
-
+            if !isListening { return true }
             if Date() >= deadline {
-                print("[Gate] 等待音频缓冲超时 \(Int(Self.analysisGateTimeout))s（就绪 \(state.readyAhead)/需 \(Self.analysisPrefetchDepth)，仍待合成 \(state.pendingTTS) 句，在跑分析 \(runningAnalysisJobs) 个），照常分析 \(job.id)")
+                print("[Gate] 让路超时，照常分析 \(job.id)")
                 return true
             }
-
-            if !announced {
-                announced = true
-                print("[Gate] LLM 分析让路给 TTS：chapter=\(live.chapterID) 就绪 \(state.readyAhead)/\(Self.analysisPrefetchDepth) 句，在跑分析 \(runningAnalysisJobs) 个")
-            }
-            try? await Task.sleep(nanoseconds: 250_000_000)
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
-    }
-
-    /// 播放位置之后的音频缓冲深度。章节读不到时视为「无需让路」。
-    private func audioBufferState(bookID: UUID, chapterID: UUID) async -> (readyAhead: Int, pendingTTS: Int) {
-        var chapter = await cache.get(chapterID)
-        if chapter == nil { chapter = await chapterStore.load(bookID: bookID, chapterID: chapterID) }
-        guard let chapter else {
-            return (Self.analysisPrefetchDepth, 0)
-        }
-        let position = min(max(0, readingPositions[chapterID] ?? 0), chapter.sentences.count)
-        var ready = 0; var pending = 0
-        for i in position..<chapter.sentences.count {
-            if chapter.sentences[i].audioURL == nil { pending += 1 } else { ready += 1 }
-        }
-        return (ready, pending)
     }
 
     /// 章级分析状态以持久层的批次为准：快分析会把句子全填满参数，
@@ -720,9 +823,16 @@ actor ReaderPipeline {
     /// 取任务后被缓冲闸口挂起的批次算 active，避免刚卸载又立刻重载。
     private func unloadAnalyzerIfIdle() async {
         guard analysisJobsActive == 0, runningAnalysisJobs == 0 else { return }
-        guard await analysisQueue.pendingCount == 0 else { return }
+        let reason: String
+        if analysisSuspended {
+            reason = "收听中已挂起"
+        } else if await analysisQueue.pendingCount == 0 {
+            reason = "分析队列排空"
+        } else {
+            return
+        }
         await analyzer.unloadModel()
-        print("[Memory] 分析队列排空 → 卸载 Qwen3-0.6B，权重内存让给 TTS 缓存与预取")
+        print("[Memory] \(reason) → 卸载 Qwen3-0.6B，权重内存让给 TTS 缓存与预取")
     }
 
     private func hydrate(_ raw: Chapter, bookID: UUID) async -> Chapter {

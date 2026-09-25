@@ -12,10 +12,11 @@ struct AIAnalysisResult: Codable, Sendable {
     let sentences: [AIAnalyzedSentence]
 }
 
-/// 模型的一次逐句输出。只有朗读参数：type / speaker 不在这里——「这句是谁说的」
+/// 模型的一次逐句输出。只有情绪两件事：type / speaker 不在这里——「这句是谁说的」
 /// 由 `FastChapterAnalyzer` 的规则决定，模型那 0.6B 会凭空造人名（真机上把整批
 /// 都标成对白、说话人写成「灵」「人体」），而说话人直接决定用哪把声音，错了比不填更糟。
-/// speed / pitch 也不在：它们由 `Emotion` 查表得到。
+/// speed / pitch 由 `Emotion` 查表；voiceStrength 由提示语动词的规则决定——
+/// 真机日志里模型稳定漏掉最后一列（每批 7~8 处「声音力度缺失」），漏一次整批重烧一遍 GPU。
 struct AIAnalyzedSentence: Codable, Sendable {
 
     let index: Int
@@ -24,19 +25,14 @@ struct AIAnalyzedSentence: Codable, Sendable {
 
     let emotionIntensity: Double
 
-    /// 整句目标声音力度（饱满/有支撑），与 emotionIntensity 独立
-    let voiceStrength: Double
-
     init(
         index: Int,
         emotion: Emotion,
-        emotionIntensity: Double,
-        voiceStrength: Double
+        emotionIntensity: Double
     ) {
         self.index = index
         self.emotion = emotion
         self.emotionIntensity = emotionIntensity
-        self.voiceStrength = voiceStrength
     }
 
     init(from decoder: Decoder) throws {
@@ -47,7 +43,5 @@ struct AIAnalyzedSentence: Codable, Sendable {
         emotionIntensity = try container.decodeIfPresent(
             Double.self, forKey: .emotionIntensity
         ) ?? emotion.defaultIntensity
-        voiceStrength = try container.decodeIfPresent(Double.self, forKey: .voiceStrength)
-            ?? emotion.defaultVoiceStrength
     }
 }

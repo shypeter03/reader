@@ -11,19 +11,19 @@ enum AITools {
 
     // MARK: - Build Prompt
 
-    /// 给 0.6B 小模型下的指令：只问朗读参数，不问「这句是谁说的」。
+    /// 给 0.6B 小模型下的指令：只问「情绪 + 情绪强度」两件它比正则强的事。
     ///
-    /// 两版演进都在削任务量，因为真机日志里失败的都是任务本身：
+    /// 一路减法的理由是真机日志里的失败形状：
     /// 1. 旧版 8 列 JSON、指令 3000 字：prefill 大、多约束下漏列串列。→ 压到 6 列。
     /// 2. 6 列仍不稳：`[11,"d","灵",neutral,0.5,0.8]`（emotion 没加引号）、
     ///    `"0.80,0.80],`（字符串没闭合），而且 10 句全被判成对白、说话人写成
-    ///    「灵」「秦」「人体」「元气」这种单字幻觉——说话人直接影响选哪把声音，
-    ///    错了比不填更糟。
-    ///
-    /// 所以现在：type / speaker 交回正则（`FastChapterAnalyzer`，它按引号和本句
-    /// 提示词判对白，不会凭空造人名），LLM 只报 emotion / 情绪强度 / 声音力度这三件
-    /// 它确实比正则强的事。格式也不再要 JSON：一行一句、空格分隔的 4 个字段，
-    /// 少掉引号与括号就少掉一整类语法失败，输出 token 也一起减半。
+    ///    「灵」「秦」这种单字幻觉——说话人直接影响选哪把声音，错了比不填更糟。
+    ///    → type / speaker 交回正则，格式弃 JSON 改一行四字段。
+    /// 3. 四字段版真机仍稳定漏最后一列：`句21: 声音力度缺失→0.8` 每批 7~8 处，
+    ///    每次都触发整批重试=同一批 10 句再烧一遍 GPU。而声音力度本来就不需要
+    ///    理解上下文——它只由「吼/低声/耳语」这类提示语动词决定，
+    ///    `FastChapterAnalyzer.detectVoiceStrength` 已经在管这件事，口径还和这里一致。
+    ///    → 收回到规则，模型只剩 3 个字段。
     static func buildPrompt(
         chapter: Chapter,
         context: StoryContext
@@ -42,18 +42,17 @@ enum AITools {
         return """
         /no_think
 
-        为小说句子标注 TTS 朗读参数。每句一行，共 \(chapter.sentences.count) 行，序号照抄输入、顺序一致：\(indexList)
+        为小说句子标注朗读情绪。每句一行，共 \(chapter.sentences.count) 行，序号照抄输入、顺序一致：\(indexList)
 
-        每行 4 项，用空格分开：序号 情绪 情绪强度 声音力度
+        每行 3 项，用空格分开：序号 情绪 情绪强度
         情绪只能写这 9 个英文词之一：neutral happy sad angry surprised fearful excited calm tense
         情绪强度 0~1：0.3 轻微 / 0.5 中等 / 0.8 明显 / 1.0 极强烈。
-        声音力度 0~1，与情绪强度互相独立，按情绪取：neutral/calm/sad 0.80，fearful 0.75，happy/tense 0.85，surprised/excited 0.90，angry 0.95；只有本句明写轻声、低声、小声、耳语、悄悄，才给 0.6~0.75。
-        情绪弱不等于声音虚：悲伤、平静、克制都不许读成气声。整句的音量、气息、语速必须从头到尾一致，不许句尾越读越轻。
-        不要引号、不要方括号、不要逗号、不要解释、不要说话人。判断不了就写：序号 neutral 0.5 0.8
+        情绪弱不等于声音虚：悲伤、平静、克制也只是情绪淡，不是气声。
+        不要引号、不要方括号、不要逗号、不要解释、不要说话人。判断不了就写：序号 neutral 0.5
 
         示例（与下面的输入无关，序号不要照抄）：
-        7 calm 0.3 0.8
-        8 angry 0.85 0.95
+        7 calm 0.3
+        8 angry 0.85
 
         输入：
         \(sentenceList)
@@ -64,19 +63,18 @@ enum AITools {
 
     // MARK: - Parse Response
 
-    /// 一条识别结果：序号 + 三个朗读参数。数值为 nil 表示模型没给出可用的数。
+    /// 一条识别结果：序号 + 情绪 + 情绪强度。数值为 nil 表示模型没给出可用的数。
     private struct Record {
         var index: Int?
         var emotion: Emotion
         var intensity: Double?
-        var voiceStrength: Double?
     }
 
     /// 按「情绪词」为锚点在记号流里定位每条结果，再按位置收参数。
     ///
     /// 不解析 JSON：模型会漏引号、漏闭合括号、多写一列、把两数塞进一个串，任何一处
     /// 语法塌掉都能把整批带进默认值。这里引号括号逗号一律当分隔符丢掉，所以
-    /// `31 calm 0.5 0.8`、`[31,"calm",0.5,0.8]`、`31 calm 0.5 0.8（说明）` 是同一个结果；
+    /// `31 calm 0.5`、`[31,"calm",0.5]`、`31 calm 0.5（说明）` 是同一个结果；
     /// 坏掉的一行只丢那一行（那句保留规则参数），后面的行照样收。
     static func parseResponse(
         _ response: String,
@@ -86,7 +84,7 @@ enum AITools {
         let expected = Set(expectedIndices)
         let tokens = tokenize(response, expectedIndices: expected)
         var records: [Record] = []
-        // 上一条结果消费到的位置：往前找序号时不越过它，免得把上一行的力度当序号。
+        // 上一条结果消费到的位置：往前找序号时不越过它，免得把上一行的参数当序号。
         var cursor = 0
         var i = 0
 
@@ -106,15 +104,17 @@ enum AITools {
                 j -= 1
             }
 
-            // 情绪词之后的两个数：情绪强度、声音力度（越界交给校验裁回 0~1）。
+            // 情绪词之后那一个数就是情绪强度（越界交给校验裁回 0~1）。
             // 撞见下一行的序号或情绪就停，别让缺数字的一行把下一行的参数顺走。
-            var numbers: [Double] = []
+            var intensity: Double?
             var k = i + 1
-            while k < tokens.count, numbers.count < 2 {
+            while k < tokens.count {
                 let token = tokens[k]
                 if token.indexCandidate != nil || token.emotion != nil { break }
                 if let value = token.number {
-                    numbers.append(value)
+                    intensity = value
+                    k += 1
+                    break
                 }
                 k += 1
             }
@@ -122,8 +122,7 @@ enum AITools {
             records.append(Record(
                 index: index,
                 emotion: emotion,
-                intensity: numbers.first,
-                voiceStrength: numbers.count > 1 ? numbers[1] : nil
+                intensity: intensity
             ))
             cursor = k
             i = k
@@ -177,8 +176,10 @@ enum AITools {
 
     // MARK: - Build One Sentence + Validation
 
-    /// 返回「一定合规」的朗读参数 + 本次所做的修正项。
+    /// 返回「一定合规」的情绪标注 + 本次所做的修正项。
     /// issues 非空即代表模型原始输出缺项/越界，被强制修正到合法值。
+    ///
+    /// 只修情绪强度：声音力度不再经过模型，所以这里不可能也不该出现它的修正记录。
     private static func makeSentence(
         record: Record,
         expectedIndex: Int
@@ -198,36 +199,18 @@ enum AITools {
             intensity = clamped
         }
 
-        // voiceStrength 与 emotionIntensity 独立：模型常把「悲伤/紧张」顺手写成
-        // 0.2 这类气声值，听感就是后半句越读越轻、句尾泄气。低于地板时按该情绪的
-        // 推荐值抬回来，绝不把虚弱的力度原样送进 TTS。
-        var voiceStrength = record.voiceStrength
-        if voiceStrength == nil {
-            issues.append("声音力度缺失→\(emotion.defaultVoiceStrength)")
-            voiceStrength = emotion.defaultVoiceStrength
-        } else if let raw = voiceStrength, raw < 0 || raw > 1 {
-            let clamped = clamp(raw, min: 0, max: 1)
-            issues.append("声音力度越界(\(raw))→\(clamped)")
-            voiceStrength = clamped
-        }
-        if let raw = voiceStrength, raw < Self.voiceStrengthFloor {
-            let lifted = max(Self.voiceStrengthFloor, emotion.defaultVoiceStrength)
-            issues.append("声音力度过低(\(raw))→\(lifted)，情绪弱不等于声音虚")
-            voiceStrength = lifted
-        }
-
         return (
             AIAnalyzedSentence(
                 index: expectedIndex,
                 emotion: emotion,
-                emotionIntensity: intensity ?? Emotion.neutral.defaultIntensity,
-                voiceStrength: voiceStrength ?? emotion.defaultVoiceStrength
+                emotionIntensity: intensity ?? Emotion.neutral.defaultIntensity
             ),
             issues
         )
     }
 
     /// 送进 TTS 的最低声音力度。低于此值基本就是气声/句尾泄气。
+    /// 现在由规则引擎兜底（`FastChapterAnalyzer.detectVoiceStrength`），模型不参与。
     static let voiceStrengthFloor: Double = 0.6
 
     // MARK: - Tokenizer

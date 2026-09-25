@@ -200,9 +200,9 @@ actor ChapterAnalyzer {
         var bestResult: AIAnalysisResult?
         var bestIssueCount = Int.max
 
-        // 一行四个字段约 8 个 token，24 是留余量的上界。不再用 4096：那等于允许模型
+        // 一行三个字段约 6 个 token，18 是留余量的上界。不再用 4096：那等于允许模型
         // 在一批 10 句上跑进重复循环，KV 一路涨到几个 GB，还要几十秒才停。
-        let maxTokens = 32 + expectedIndices.count * 24
+        let maxTokens = 32 + expectedIndices.count * 18
 
         for attempt in 1 ... 2 {
 
@@ -231,8 +231,8 @@ actor ChapterAnalyzer {
             prompt = basePrompt + """
 
             上一份输出无效（\(summary)）。丢弃它并从头重新输出，不要修补、不要解释。
-            共 \(expectedIndices.count) 行，每行 4 项、空格分开：序号 情绪 情绪强度 声音力度
-            序号依次为 \(indices)；情绪只能是 neutral happy sad angry surprised fearful excited calm tense 之一；两个数字都在 0~1，不加引号、不加方括号。
+            共 \(expectedIndices.count) 行，每行 3 项、空格分开：序号 情绪 情绪强度
+            序号依次为 \(indices)；情绪只能是 neutral happy sad angry surprised fearful excited calm tense 之一；那一个数字在 0~1，不加引号、不加方括号。
             """
             print("↻ 批次重试生成（上轮问题 \(issues.count) 处）")
         }
@@ -273,13 +273,15 @@ actor ChapterAnalyzer {
 
             var updated = sentence
 
-            // 只有这 3 项来自模型：type / speaker 交回正则，speed / pitch 跟情绪查表。
+            // 只有这 2 项来自模型：type / speaker 和 voiceStrength 都归正则，
+            // speed / pitch 跟情绪查表。
             updated.emotion = analysis.emotion
             updated.emotionIntensity = clamp(analysis.emotionIntensity, min: 0, max: 1)
-            updated.voiceStrength = clamp(
-                analysis.voiceStrength,
-                min: AITools.voiceStrengthFloor,
-                max: 1
+            // 声音力度必须跟着新情绪重算：模型不再报这一列，而规则给的是「旧情绪的默认档
+            // 或提示语动词」。留着旧值会出现 angry 配 calm 的 0.80，句尾泄气就又回来了。
+            updated.voiceStrength = FastChapterAnalyzer.voiceStrength(
+                for: sentence.text,
+                emotion: analysis.emotion
             )
             // speed / pitch 跟情绪查表，而不是跟模型：情绪被校准了，语速音调必须一起走，
             // 否则会出现「angry 却用 calm 的语速」。表就是 Emotion 那一份，

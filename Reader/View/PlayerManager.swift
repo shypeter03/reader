@@ -135,6 +135,10 @@ final class PlayerManager: ObservableObject {
         self.currentBook = book
         self.pipeline = pipeline
 
+        // 这本书的整书解析批次在这里补排一次：老版本导入的书队列里没有批次，而播放
+        // 路径已经不排解析了，不在这里补它就永远等不到 LLM 校准。幂等、不等待。
+        await pipeline.registerBook(book)
+
         let context = StoryContext(
             characters: [],
             recentCharacters: [],
@@ -300,6 +304,15 @@ final class PlayerManager: ObservableObject {
         player?.pause()
 
         isPlaying = false
+
+        reportListeningStopped()
+    }
+
+    /// 用户停手 = 把 GPU 让给后台解析。调度器只看「有没有人在听」，
+    /// 它没法从播放进度自己推断，所以必须在这里明说。
+    private func reportListeningStopped() {
+        guard let book = currentBook, let pipeline else { return }
+        Task { await pipeline.reportListeningStopped(bookID: book.id) }
     }
 
     // MARK: - Toggle
@@ -338,6 +351,8 @@ final class PlayerManager: ObservableObject {
         progress = 0
 
         duration = 0
+
+        reportListeningStopped()
     }
 
     // MARK: - Seek
