@@ -29,7 +29,7 @@ struct ReaderView: View {
     /// 那种转圈既不是进度也不是结果，用户只能反复退出重进。
     @State private var loadError: String?
 
-    /// 分页结果。只在「章 / 句数 / 角色名到位情况 / 页尺寸 / 字号行距」变化时重算。
+    /// 分页结果。只在「章 / 句数 / 页尺寸 / 字号行距」变化时重算。
     @State private var layout = PageLayout.placeholder
 
     /// 分页每换一版就 +1。它必须进纸面的内容口径（`pageContentKey`）：
@@ -1007,20 +1007,15 @@ private extension ReaderView {
         .allowsHitTesting(false)
     }
 
-    /// 分页输入。角色名数量也在里面：LLM 认出说话人后每句要多占一行，
-    /// 不重排的话页高会一路偏下去。
+    /// 分页输入。角色名**不在**里面：纸上不显示说话人，名字只给语音用，
+    /// 所以 LLM 后补的名字不会改动一行高度，也就不该触发重排。
     func layoutKey(
         _ chapter: Chapter,
         _ size: CGSize
     ) -> String {
 
-        let labeled =
-            chapter.sentences.reduce(0) {
-                $0 + ($1.characterName == nil ? 0 : 1)
-            }
-
-        return """
-        \(chapter.id.uuidString)|\(chapter.sentences.count)|\(labeled)\
+        """
+        \(chapter.id.uuidString)|\(chapter.sentences.count)\
         |\(pageMetrics(size))
         """
     }

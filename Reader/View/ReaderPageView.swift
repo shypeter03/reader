@@ -170,12 +170,6 @@ struct ReaderPageBody: View {
 
         let isActive = run.position == activePosition
 
-        if run.kind == .label {
-            return isActive
-                ? Color.accentColor
-                : theme.text.opacity(0.55)
-        }
-
         return isActive || activePosition == nil
             // 整页没有「正在读的那一句」时一律正常上色：关掉语音播报后
             // activePosition 是 nil，只判 isActive 会把每一行都涂成灰的，
@@ -265,7 +259,8 @@ struct ReaderPageView: View {
             // 那一行滚得到、翻不到。但套上滚动的代价是整页成了网页——手指竖着划一下
             // 纸就跟着走，而翻页、下拉关闭、左边缘返回三条手势都得先让开竖着的位移
             // （见 `ReaderView.swipeChanged` 那句「竖着划是给页内滚动和下拉关闭的」）。
-            // 纸不该滚：字排不下是分页端的事，它已经留了 5% 余量，溢出的那一行剪掉。
+            // 纸不该滚：字排不下是分页端的事。分页量高走的是和这里同一个排版器的行框
+            // （渲染高从不比测量高矮），扣掉的正好是纸放得下的那么多，溢出的那一行剪掉。
             //
             // `GeometryReader` 不是多余的：`frame(maxHeight: .infinity)` **不封顶**——
             // 块上的 `fixedSize(vertical:)` 会无视提议把子视图撑到自己的固有高，

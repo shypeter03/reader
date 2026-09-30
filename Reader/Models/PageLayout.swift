@@ -67,26 +67,8 @@ enum ReaderTypography {
         size * 0.35
     }
 
-    static func labelSize(size: CGFloat) -> CGFloat {
-        size * 0.72
-    }
-
     static let horizontalMargin: CGFloat = 22
     static let verticalMargin: CGFloat = 18
-
-    /// 该句要不要单独占一行角色名。只取决于「LLM 有没有认出说话人」，
-    /// 不能掺进 audioURL 之类的流式状态：那样音频一到齐，整页高度就变了，
-    /// 分页结果却还没重算。
-    ///
-    /// 只认**段首**那一句。真书取证（庆余年 200 章）：贴上名字的 1291 句里有 298 句
-    /// 在段落中间（「看着小孩子冰雕雪琢般的可爱小脸，叹息道：『真和他妈妈长的一模一样。』」
-    /// 这种），名字挂在段中就一行，一段被劈成两块，上一块那行再也排不满——读者看见的
-    /// 「明显是一段，中间莫名空了一块，直接换行」。段中对白本来就靠引号认，名字不要了。
-    static func showsLabel(for sentence: Sentence) -> Bool {
-        sentence.startsParagraph
-            && sentence.speaker == .character
-            && sentence.characterName != nil
-    }
 }
 
 /// 一块 = 同一段里连续句子并起来的渲染单元。分段流动的落地方式：
@@ -148,8 +130,8 @@ enum ReaderBlock {
     /// 洞断不掉（把收尾标点甩在行尾是排版事故），只剩摊平这一条路：书上的中文就是两端对齐的。
     ///
     /// 三条约束：
-    /// ① 只补**我们自己断出来的**那些行。段末那一行、角色名那一行、章标题一概不补——
-    ///    那是天然的短行，拉开就成了「赵 玖」这种花名册。
+    /// ① 只补**我们自己断出来的**那些行。段末那一行、章标题那一行一概不补——
+    ///    那是天然的短行，拉开就成了字缝能塞进手指的花名册。
     /// ② 补到 `width - 0.5`，不补满分；补完这一行还要按落纸行回炉验一次（`lineBreaks` 里
     ///    那道「折半重试」的闸）。断点按 `width` 判定，补齐后正好顶满的一行在浮点上没人担保
     ///    还装得下；一旦判成装不下，引擎自己再折，量的与排的就此分家。
@@ -522,15 +504,13 @@ enum ReaderBlock {
     }
 
     enum RunKind {
-        case label
         case body
         case heading
     }
 
     struct Run {
 
-        /// 这一片段属于哪一句。角色名行也记着自己那句：点名字读那句，
-        /// 当前句高亮时名字也跟着变。
+        /// 这一片段属于哪一句。点某一句时靠它把高亮落到正确的句子上。
         let position: Int
 
         let text: String
@@ -540,8 +520,7 @@ enum ReaderBlock {
 
     /// 一片字 → 块。
     ///
-    /// 断块的两条规则：新段落开头、章标题之后。角色名不再单列一条：`showsLabel` 现在
-    /// 只在段首生效，那条永远被「新段落」盖住，留着只会让人以为段中也能劈块。
+    /// 断块的两条规则：新段落开头、章标题之后。
     /// 分页端和渲染端都调这一个函数，所以「一页里的块」完全由 `pages: [[PageSlice]]` 决定，
     /// 不需要另存一份块结构。
     ///
@@ -582,83 +561,34 @@ enum ReaderBlock {
         return groups
     }
 
-    /// 一句占的片段。分页按「句」装，一个字的句子也不能把名字留在上一页、
-    /// 正文挪到下一页，所以 label 和正文得绑成一个条目一起搬。
-    struct Entry {
-
-        let position: Int
-
-        let runs: [Run]
-    }
-
-    /// 一片 = 一个条目（角色名行 + 正文）。
+    /// 一块要排的片段：一句一片，段首缩进已经在 `PageSlice.text` 里的那两个全角空格上。
     ///
-    /// 角色名只跟着句首那一片走：切开的后半截再顶一行名字，就成了同一段里冒出两个人名。
-    static func entries(
-        for group: [PageSlice],
-        sentences: [Sentence],
-        chapterTitle: String
-    ) -> [Entry] {
-
-        group.map { slice in
-
-            let sentence = sentences[slice.position]
-
-            var runs: [Run] = []
-
-            if !slice.continues,
-               ReaderTypography.showsLabel(for: sentence),
-               let name = sentence.characterName {
-
-                runs.append(
-                    Run(
-                        position: slice.position,
-                        text: name + "\n",
-                        kind: .label
-                    )
-                )
-            }
-
-            runs.append(
-                Run(
-                    position: slice.position,
-                    text: slice.text,
-                    kind: !slice.continues
-                        && ReaderTypography.isChapterHeading(
-                            sentence,
-                            chapterTitle: chapterTitle
-                        ) ? .heading : .body
-                )
-            )
-
-            return Entry(position: slice.position, runs: runs)
-        }
-    }
-
-    /// 一块要排的片段。段首缩进已经在 `PageSlice.text` 里的那两个全角空格上。
+    /// 分页按「句」装，所以一片就是一句，不再往句子上挂别的东西（从前那句首会多顶一行角色名，
+    /// 于是「同一段里莫名空出一块」和「名字根本不是名字」两类事故都从那里来。对白靠引号认，
+    /// 说话人只留给语音用）。
     static func runs(
         for group: [PageSlice],
         sentences: [Sentence],
         chapterTitle: String
     ) -> [Run] {
-        entries(
-            for: group,
-            sentences: sentences,
-            chapterTitle: chapterTitle
-        ).flatMap(\.runs)
-    }
 
-    static func size(
-        _ run: Run,
-        body: CGFloat
-    ) -> CGFloat {
-        run.kind == .label ? ReaderTypography.labelSize(size: body) : body
+        group.map { slice in
+
+            Run(
+                position: slice.position,
+                text: slice.text,
+                kind: !slice.continues
+                    && ReaderTypography.isChapterHeading(
+                        sentences[slice.position],
+                        chapterTitle: chapterTitle
+                    ) ? .heading : .body
+            )
+        }
     }
 
     /// 字重的唯一出处。UIKit 和 SwiftUI 两边都从这儿换算，别各写一份。
     static func weight(_ run: Run) -> RunWeight {
         switch run.kind {
-        case .label: return .medium
         case .heading: return .semibold
         case .body: return .regular
         }
@@ -666,21 +596,18 @@ enum ReaderBlock {
 
     enum RunWeight {
         case regular
-        case medium
         case semibold
     }
 
+    /// 字号只有正文一个值（章标题靠字重和居中区分，不放大：放大了行高就得再算一份）。
     static func uiFont(
         _ run: Run,
         body: CGFloat
     ) -> UIFont {
 
-        let size = self.size(run, body: body)
-
         switch weight(run) {
-        case .regular: return .systemFont(ofSize: size)
-        case .medium: return .systemFont(ofSize: size, weight: .medium)
-        case .semibold: return .systemFont(ofSize: size, weight: .semibold)
+        case .regular: return .systemFont(ofSize: body)
+        case .semibold: return .systemFont(ofSize: body, weight: .semibold)
         }
     }
 
@@ -689,12 +616,9 @@ enum ReaderBlock {
         body: CGFloat
     ) -> Font {
 
-        let size = self.size(run, body: body)
-
         switch weight(run) {
-        case .regular: return .system(size: size)
-        case .medium: return .system(size: size, weight: .medium)
-        case .semibold: return .system(size: size, weight: .semibold)
+        case .regular: return .system(size: body)
+        case .semibold: return .system(size: body, weight: .semibold)
         }
     }
 
@@ -974,7 +898,7 @@ enum ReaderTheme: String, CaseIterable, Identifiable {
     /// 为什么不由系统外观裸决定：`uiBackground` 是动态色，取值要看宿主视图的
     /// traits，而翻页的纸是缓存里的 `UIHostingController`，脱离视图树时系统从浅
     /// 切深它收不到更新——表现就是「底色已经黑了，翻起来那张纸还是亮的」。
-    /// 另一层：夜间档配系统浅色时，页眉/角色名那些 `.secondary` 语义色会解成深灰，
+    /// 另一层：夜间档配系统浅色时，页眉那些 `.secondary` 语义色会解成深灰，
     /// 落在深纸上就是看不见。固定档自己说死深浅，「跟随」才把决定权交回系统。
     /// 判据和 `backgroundRGB` 同一份：那里只有 `.system` 真的分了 light/dark 两套纸。
     func userInterfaceStyle(
@@ -1022,7 +946,7 @@ struct PageSlice: Equatable, Hashable {
     /// 这一片要排的字。段首缩进那两个全角空格在句首那一片的开头。
     let text: String
 
-    /// true = 上一页断下来的后半截：不吃段前白、不再缩进、不带角色名那一行。
+    /// true = 上一页断下来的后半截：不吃段前白、不再缩进、不当成新段落开头。
     let continues: Bool
 
     init(
@@ -1046,6 +970,18 @@ struct PageLayout: Equatable {
     var pageCount: Int { pages.count }
 
     static let placeholder = PageLayout(pages: [[]], bodySize: 19)
+
+    /// 一页给正文用的高度。**这个减法只写在这里**：分页端用它，探针也问它。
+    ///
+    /// 从前它藏在 `paginate` 里、末尾还乘了 0.95，于是三份探针各自抄了一遍那个数——
+    /// 改了生产忘了探针，探针量到的就是上一页的几何，正好看见不到「每页少一行」。
+    /// 上下各让 18pt 是渲染端那层 `.padding(.vertical,)` 的账，两边必须是同一个数。
+    static func usableHeight(area: CGSize, body: CGFloat) -> CGFloat {
+        max(
+            area.height - ReaderTypography.verticalMargin * 2,
+            body * 3
+        )
+    }
 
     /// 该句落在第几页。一句被切成两片时算**前**一片那页：跟读要在这一句开口时就把页翻过去，
     /// 不能等它念完。句子比页数「超范围」时（比如刚重排、或播放已推进到未渲染的句子）
@@ -1088,13 +1024,11 @@ struct PageLayout: Equatable {
         // 没有正的（`.probe/justify-probe.swift` C 段）。从前这里是 CoreText 的 `boundingRect`，
         // 它报的高和它自己断出的行对不上，最多虚高一整行——那才是「分页高比纸上多」的根。
         //
-        // 0.95 这层余量留着，但它原本担保的那 3% 已经不存在了；纸不滚动（127 去掉了页内
-        // ScrollView），余量小了只会往「页尾溢出」的方向要命，所以先不敢摘——摘不摘该由
-        // 真机看页尾空多少来定（78），不是由这段注释定。
-        let usableHeight = max(
-            (area.height - ReaderTypography.verticalMargin * 2) * 0.95,
-            body * 3
-        )
+        // 不打折（见 `usableHeight`）：那层 0.95 是给 `boundingRect` 的虚高兜底的，量法换正
+        // 之后它只剩一个效果——真机口径下版心 693pt、行距 28pt，658.35 只够 23 行，而纸上
+        // 放得下 24 行，于是「页尾莫名空一行」每页都发生。测量端报矮的方向已被探针堵死，
+        // 用满不会溢到纸外；真溢出一行也只是被 `clipped()` 剪掉，换回来的是每章少翻几页。
+        let usableHeight = Self.usableHeight(area: area, body: body)
 
         func measure(
             _ runs: [ReaderBlock.Run]

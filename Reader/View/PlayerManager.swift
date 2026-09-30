@@ -804,6 +804,21 @@ private extension PlayerManager {
         currentCharacter =
             sentence.characterName ?? "旁白"
 
+        // 取证：每开口一句报一次「谁在说 + 用哪把嗓 + 这段音频出自哪个后端」。
+        // 听出来的「旁白换人」只有这一行能对上：
+        // `录` 是这段缓存实际用的嗓（可能是档案补齐前录的），`该` 是按现在的口径算出来的嗓，
+        // 两者不一致就说明这句该重录；`该` 自己在一章里跳来跳去，那就是归属判错了。
+        // `出` 是磁盘上那个文件所在的命名空间：`recordedVoiceID` 只记名字，而同一名字
+        // 在 Edge 是 zh-CN-YunyangNeural、在 Kokoro 是 zm_098——是两把嗓。所以「`该` 全程
+        // 不变、`出` 在 edge-v1/kokoro-v3 之间跳」正是「全是旁白却换人」最像的成因
+        // （Edge 是主后端，某句网络失败就掉到 Kokoro 录那一句，落回磁盘混进同一章）。
+        if let book = currentBook, let chapter = currentChapter {
+            let backend = sentence.audioURL?
+                .deletingLastPathComponent()
+                .lastPathComponent
+            print("[Voice] 句\(currentSentenceIndex) \(sentence.type.rawValue)/\(sentence.speaker.rawValue) 名=\(sentence.characterName ?? "-") 录=\(sentence.recordedVoiceID ?? "旧口径") 该=\(VoiceResolution.resolve(sentence: sentence, chapter: chapter, bookID: book.id)) 出=\(backend == chapter.id.uuidString ? "平铺" : (backend ?? "无音频")) 「\(String(sentence.text.prefix(12)))」")
+        }
+
         guard
             let url = sentence.audioURL
         else {
