@@ -14,7 +14,7 @@ enum SentenceSplitter {
     ///
     /// 存在的理由：正文只在导入时后台解析一次并落库，打开章节不再跑 parser，
     /// 旧书的 chapter.json 里没有字段可对（读成 0），版本对不上才回落解析器重切一遍。
-    static let textVersion = 1
+    static let textVersion = 2
 
     /// 句子边界。
     ///

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 朗读必须能退到后台继续放。AVAudioSession 早就用了 .playback，
+	     但没有这个声明，iOS 一切走就把 App 冻住、声音跟着停。
+	     只能写在这里：GENERATE_INFOPLIST_FILE 不认 INFOPLIST_KEY_UIBackgroundModes
+	     （实测：加了、构过了、产物 Info.plist 里没有这个键）。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<!-- 主屏幕图标下面那行字。系统只让我们改文字（字体是 SF，不可控），所以名字要短：
+	     「纸声」两字在 60pt 的格子下面不会被打成「纸声…」，而 `AIReader` 那七个字母会。
+	     开屏那行字取的是 `LaunchSplash.swift` 里的 `Brand.displayName`——改名字两处一起改，
+	     不然开屏报一个新名、桌面挂一个旧名。 -->
+	<key>CFBundleDisplayName</key>
+	<string>纸声</string>
+	<!-- 系统启动页。默认那份（`INFOPLIST_KEY_UILaunchScreen_Generation = YES`）是个空字典，
+	     于是冷启动先是一段纯白，直到 App 画出第一帧才看见东西——这台机器要加载
+	     MLX / ONNX 那两个 dylib，那一段白足够长到被当成「卡住了」。
+	     这里自己写：底色用 `LaunchBackground`（和开屏那一层同一个资源），所以
+	     启动页 → App 第一帧是同一块纸色接着同一块纸色，中间无色差。
+	     不往这儿放图：那张图只能是资源文件，而「某一本书的封面」钉进资源就意味着
+	     换书、换封面之后启动页还停在旧的那本上。开屏要展示的东西由 `LaunchSplash`
+	     画，图标在那一层淡入。
+	     启动页本身不能动：那是 SpringBoard 画的，App 还没跑起来。
+	     键必须写在这儿，理由和 `UIBackgroundModes` 一样。 -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+</dict>
+</plist>

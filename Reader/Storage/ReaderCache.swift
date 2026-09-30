@@ -46,6 +46,25 @@ enum ReaderCache {
         return url
     }()
 
+    /// 封面副本根：`Application Support/AIReader/covers`
+    static let coverRoot: URL = {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        let url = base
+            .appendingPathComponent("AIReader", isDirectory: true)
+            .appendingPathComponent("covers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }()
+
+    /// 一本书的封面副本位置。按 bookID 命名，所以「重新导入同一本书」也对得上号。
+    static func coverCopy(for bookID: UUID, source: URL) -> URL {
+        let ext = source.pathExtension.lowercased()
+        return coverRoot.appendingPathComponent(bookID.uuidString + (ext.isEmpty ? "" : "." + ext))
+    }
+
     static func bookAudioDirectory(_ bookID: UUID) -> URL {
         audioRoot.appendingPathComponent(bookID.uuidString, isDirectory: true)
     }

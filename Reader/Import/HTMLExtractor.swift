@@ -119,6 +119,9 @@ enum HTMLTextExtractor {
                 options: .regularExpression
             )
 
+        // 中文之间的字面空格：源文件自带的，不是排版造出来的。
+        text = removingSpacesBetweenCJK(text)
+
         // 换行分两种：段内折行要接上，段落边界才留作句界。
         // 见 ``joiningSoftLineBreaks``。
         text = joiningSoftLineBreaks(text)
@@ -127,6 +130,55 @@ enum HTMLTextExtractor {
             .trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
+    }
+
+    /// 删掉**两侧都是中文语境**的行内空格（半角空格、制表符、nbsp）。
+    ///
+    /// 为什么要有这一步：盗版/转换出来的 EPUB 正文里就带着空格，实测十本里九本有——
+    /// 「偷出救命之药 ，而被青罗宗以魂炼」「位列榜首 ；《将夜》」「后 山海战 爆发」。
+    /// 它们是一个个真字符，落在中文句子中间，渲染出来就是段里一截莫名的白；
+    /// 阅读页没法把它当排版，因为中文一个字一格，多空一格就多看得见的一格。
+    ///
+    /// 判据写成「左右都不该有空格」而不是「把空格都清掉」：`第 5 章`、`ISBN 978-…`、
+    /// `Perfect Unknow able` 这些一侧是 ASCII 的空格是该留的，那是词与词之间。
+    /// 全角空格 U+3000 也不碰——中文书里它是版权页对齐、扉页作者行分隔用的排版空格
+    /// （「出　　版　北京出版集团公司」），删了就把一版排好的字挤成一团；
+    /// 而正文段首那两个全角空格轮不到这里，`SentenceSplitter` 收尾时 trim 掉了。
+    ///
+    /// 换行不参与（段落边界全靠它），见 `joiningSoftLineBreaks`。
+    static func removingSpacesBetweenCJK(_ text: String) -> String {
+
+        let spaces: Set<Swift.Character> = [" ", "\t", "\u{00A0}"]
+        let characters = Array(text)
+
+        var output = ""
+        output.reserveCapacity(text.count)
+
+        var index = 0
+        while index < characters.count {
+
+            guard spaces.contains(characters[index]) else {
+                output.append(characters[index])
+                index += 1
+                continue
+            }
+
+            var scan = index
+            while scan < characters.count, spaces.contains(characters[scan]) {
+                scan += 1
+            }
+
+            let previous = output.last ?? " "
+            let next = scan < characters.count ? characters[scan] : " "
+            // 两侧都是中文（含全角标点、弯引号）→ 这个空格没有存在的理由
+            if !(isCJKContext(previous) && isCJKContext(next)) {
+                output.append(" ")
+            }
+
+            index = scan
+        }
+
+        return output
     }
 
     /// 只有一个换行的地方是**段内折行**（XHTML 源码为了排版折的行、单个 `<br>`），
@@ -567,6 +619,24 @@ enum HTMLTextExtractor {
         )
 
         return text
+    }
+
+    /// 章节标题专用：清洗完再把换行压成一个空格。
+    ///
+    /// 正文必须留着换行，标题不行——`<span>第2章</span><br/>李火旺` 洗出来是
+    /// 「第2章\n李火旺」，谁按单行显示就把后面那截整条切掉。落库前就并好，
+    /// 不留给每个显示处各自猜一次。
+    static func cleanHTMLTitle(_ html: String) -> String {
+
+        cleanHTMLText(html)
+            .replacingOccurrences(
+                of: "[ \t\r\n\u{3000}]+",
+                with: " ",
+                options: .regularExpression
+            )
+            .trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
     }
 
 }

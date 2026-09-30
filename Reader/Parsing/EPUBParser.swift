@@ -216,11 +216,11 @@ struct EPUBParser {
         // 不读取 XHTML 正文。
         // ------------------------------------------------
 
-        var chapters: [
-            ChapterDescriptor
-        ] = []
+        // 先把「确实是正文」的书脊条目挑出来，再一次性筛掉封面。
+        // 分成两趟是为了下面那条「别把整本筛空」的兜底：只看单条没法知道还剩几条。
+        var candidates: [Candidate] = []
 
-        for (index, itemID) in spine.enumerated() {
+        for itemID in spine {
 
             guard let item =
                     manifest[itemID]
@@ -246,22 +246,55 @@ struct EPUBParser {
                 continue
             }
 
+            candidates.append(
+                Candidate(
+                    itemID: itemID,
+                    href: item.href,
+                    fileURL: fileURL,
+                    properties: item.properties
+                )
+            )
+        }
+
+        let body = candidates.filter {
+            !isCoverPage(
+                itemID: $0.itemID,
+                fileURL: $0.fileURL,
+                properties: $0.properties
+            )
+        }
+
+        // 只剩封面的书（图片本）把封面留着：宁可给你一章能看，也不要报「没有找到章节」。
+        if !body.isEmpty {
+            candidates = body
+        }
+
+        var chapters: [
+            ChapterDescriptor
+        ] = []
+
+        // `index` 是这份书单里的第几章，不是书脊位置——筛掉的封面/扉页不该占掉一个章号，
+        // 否则第一正文章的页眉会写「第二章」（见 `ChapterDescriptor.backLabel`）。
+        for (index, candidate) in candidates.enumerated() {
+
+            let fileURL = candidate.fileURL
+
             // 这里只读取 XHTML 的标题。
             //
             // 如果你希望导入做到极致快速，
             // 这个地方也可以不读取标题，
-            // 直接使用 "第 N 章"。
-            let title = HTMLTextExtractor.cleanHTMLText(readChapterTitle(
+            // 直接使用 "第N章"。
+            let title = HTMLTextExtractor.cleanHTMLTitle(readChapterTitle(
                     from: fileURL
                 )
-                ?? "第 \(index + 1) 章")
+                ?? ChapterDescriptor.chapterLabel(index: index))
 
             let descriptor =
                 ChapterDescriptor(
                     index: index,
                     title: title,
-                    itemID: itemID,
-                    href: item.href,
+                    itemID: candidate.itemID,
+                    href: candidate.href,
                     fileURL: fileURL
                 )
 
@@ -296,6 +329,51 @@ struct EPUBParser {
             chapters:
                 chapters
         )
+    }
+
+    /// 书脊上一条已经过了三道校验、还没决定要不要当正文的条目。
+    /// 字段摊平写：`ManifestItem` 是这份文件私有的，跟着它走就把这个类型也关住了。
+    struct Candidate {
+
+        let itemID: String
+
+        let href: String
+
+        let fileURL: URL
+
+        let properties: String?
+    }
+
+    /// 这一条是不是封面/扉页。
+    ///
+    /// EPUB 没有一个管用的写法：标准只在 manifest 上给了 `properties="cover-page"`，
+    /// 而手上两本真书都没标——牧神记是 `Text/cover.html`（内容只有书名那一行），
+    /// 我欲封天是 `Text/coverpage.html`（书名 + 作者 + 简介）。所以判据只有两条：
+    /// ① 有 cover-page 标记；② 名字（manifest id 或文件名）以 cover / title 开头。
+    ///
+    /// 按名字而不是按「有没有正文」：后者会把只有书名的封面漏掉（它有一句），
+    /// 又会误伤真没文字的图片章。章节文件名是 Ch0001 / chapter1 这一类，撞不上这两个前缀。
+    static func isCoverPage(
+        itemID: String,
+        fileURL: URL,
+        properties: String?
+    ) -> Bool {
+
+        if properties?
+            .lowercased()
+            .split(separator: " ")
+            .contains("cover-page") == true {
+            return true
+        }
+
+        let names = [
+            itemID,
+            fileURL.deletingPathExtension().lastPathComponent
+        ].map { $0.lowercased() }
+
+        return names.contains { name in
+            name.hasPrefix("cover") || name.hasPrefix("title")
+        }
     }
 }
 

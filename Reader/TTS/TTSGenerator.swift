@@ -8,22 +8,17 @@ import AVFoundation
 
 actor TTSGenerator {
 
-    private let tts: TTSService
+    /// 合成只问 TTS 外层（三个后端 + 顺位降级 + 热加载卸载），不认具体哪个后端。
+    private let tts: FallbackTTSService
 
     private let audioStore: AudioStore
 
-    /// 磁盘缓存的后端子目录（如 `kokoro`）。nil = 沿用原有平铺路径，
-    /// 也就是 Qwen3-TTS 的既有缓存位置和格式一字不改。
-    private let audioNamespace: String?
-
     init(
-        tts: TTSService,
-        audioStore: AudioStore,
-        audioNamespace: String? = nil
+        tts: FallbackTTSService,
+        audioStore: AudioStore
     ) {
         self.tts = tts
         self.audioStore = audioStore
-        self.audioNamespace = audioNamespace
     }
 
     // MARK: - Generate (full chapter)
@@ -84,8 +79,7 @@ actor TTSGenerator {
                         chapter: chapter,
                         bookID: bookID,
                         tts: tts,
-                        audioStore: audioStore,
-                        audioNamespace: audioNamespace
+                        audioStore: audioStore
                     )
             } catch is CancellationError {
                 throw CancellationError()
@@ -113,8 +107,7 @@ actor TTSGenerator {
             chapter: updated,
             bookID: bookID,
             tts: tts,
-            audioStore: audioStore,
-            audioNamespace: audioNamespace
+            audioStore: audioStore
         )
         updated.sentences[sentenceIndex].audioStatus = .completed
         return updated
@@ -132,7 +125,6 @@ actor TTSGenerator {
 
         let tts = self.tts
         let audioStore = self.audioStore
-        let audioNamespace = self.audioNamespace
 
         return AsyncThrowingStream { continuation in
 
@@ -164,8 +156,7 @@ actor TTSGenerator {
                                 chapter: chapter,
                                 bookID: bookID,
                                 tts: tts,
-                                audioStore: audioStore,
-                                audioNamespace: audioNamespace
+                                audioStore: audioStore
                             )
 
                         index += 1
@@ -212,48 +203,66 @@ actor TTSGenerator {
             chapter: chapter,
             bookID: bookID,
             tts: tts,
-            audioStore: audioStore,
-            audioNamespace: audioNamespace
+            audioStore: audioStore
         )
     }
 
     /// 复用磁盘缓存：已存在则直接返回，不再重新合成。
+    ///
+    /// 缓存按后端分子目录存（``TTSEngineType/audioNamespace``），**读的时候按顺位全问一遍**：
+    /// 换后端不该把整本书重合成一遍，而 Edge 兜底时补的那几句其实出自 Kokoro，
+    /// 只有「谁出的声存谁那格」再加挨格查，才既不误命中也找得回来。
     private static func produce(
         sentence: Sentence,
         chapter: Chapter,
         bookID: UUID,
-        tts: TTSService,
-        audioStore: AudioStore,
-        audioNamespace: String?
+        tts: FallbackTTSService,
+        audioStore: AudioStore
     ) async throws -> Sentence {
 
-        if let existing = await audioStore.load(
-            bookID: bookID,
-            chapterID: chapter.id,
-            sentenceID: sentence.id,
-            backendSubdirectory: audioNamespace
-        ) {
-
-            var reused = sentence
-            reused.audioURL = existing
-
-            if reused.duration == nil {
-                reused.duration =
-                    try? await audioDuration(url: existing)
-            }
-
-            return reused
-        }
-
-        let voiceID = resolveVoiceID(
+        let voiceID = VoiceResolution.resolve(
             sentence: sentence,
             chapter: chapter,
             bookID: bookID
         )
 
+        for namespace in await tts.cacheNamespaces() {
+
+            guard let existing = await audioStore.load(
+                bookID: bookID,
+                chapterID: chapter.id,
+                sentenceID: sentence.id,
+                backendSubdirectory: namespace
+            ) else { continue }
+
+            // 命中也要认人：缓存里那个人必须和现在该用的那把声音对上。
+            // 这一步只在这里做得了——调度器看见 audioURL 非空根本不会排这条句子，
+            // 而播放器放的是 chapter.json 里那个路径，谁也不会再去问声音该是谁。
+            if sentence.recordedVoiceID ?? VoiceResolution.legacy(for: sentence) == voiceID {
+
+                var reused = sentence
+                reused.audioURL = existing
+
+                if reused.duration == nil {
+                    reused.duration =
+                        try? await audioDuration(url: existing)
+                }
+
+                return reused
+            }
+
+            print("[Voice] 句\(sentence.index) 缓存里是 \(sentence.recordedVoiceID ?? "旧口径")，现在该用 \(voiceID) → 删掉重录")
+            await audioStore.delete(
+                bookID: bookID,
+                chapterID: chapter.id,
+                sentenceID: sentence.id,
+                backendSubdirectory: namespace
+            )
+        }
+
         let synthStart = CFAbsoluteTimeGetCurrent()
 
-        let audioData =
+        let synthesis =
             try await tts.synthesize(
                 text: sentence.text,
                 voiceID: voiceID,
@@ -268,11 +277,11 @@ actor TTSGenerator {
 
         let url =
             try await audioStore.save(
-                data: audioData,
+                data: synthesis.data,
                 bookID: bookID,
                 chapterID: chapter.id,
                 sentenceID: sentence.id,
-                backendSubdirectory: audioNamespace
+                backendSubdirectory: synthesis.backend.audioNamespace
             )
 
         let duration =
@@ -280,13 +289,15 @@ actor TTSGenerator {
 
         // 每句真正合成过一次才打这一行（缓存命中不走这里）：这是各后端统一的
         // RTF 口径，Edge 这类自己不报耗时的后端也只有在这里才有数。
-        print("[TTS⏱] 句\(sentence.index) 生成 \(String(format: "%.0f", genMs))ms / "
+        // 后端要一起打：降级和「选了哪个」都只在这里看得见证据。
+        print("[TTS⏱] 句\(sentence.index) 后端=\(synthesis.backend.rawValue) 生成 \(String(format: "%.0f", genMs))ms / "
             + "音频 \(String(format: "%.2f", duration))s / "
             + "RTF \(String(format: "%.2f", genMs / 1000 / max(0.01, duration)))")
 
         var updated = sentence
         updated.audioURL = url
         updated.duration = duration
+        updated.recordedVoiceID = voiceID
 
         return updated
     }
@@ -295,57 +306,28 @@ actor TTSGenerator {
 
     /// 作废一句音频：LLM 改了参数后旧 WAV 必须从磁盘消失，否则下一次
     /// produce 的缓存命中会把它原样取回来，重录等于没发生。
+    ///
+    /// 顺位上的每一格都要删：这句当初可能是降级到 Edge 录的，而现在选的是 Kokoro，
+    /// 只删当前后端那一格的话，produce 兜到另一格时照样捞回旧音频。
     func discardAudio(
         bookID: UUID,
         chapterID: UUID,
         sentenceID: UUID
     ) async {
-        await audioStore.delete(
-            bookID: bookID,
-            chapterID: chapterID,
-            sentenceID: sentenceID,
-            backendSubdirectory: audioNamespace
-        )
+        for namespace in await tts.cacheNamespaces() {
+            await audioStore.delete(
+                bookID: bookID,
+                chapterID: chapterID,
+                sentenceID: sentenceID,
+                backendSubdirectory: namespace
+            )
+        }
     }
 
     func discardBookAudio(
         bookID: UUID
     ) async {
         await audioStore.deleteBook(
-            bookID: bookID
-        )
-    }
-
-    nonisolated static func resolveVoiceID(
-        sentence: Sentence,
-        chapter: Chapter,
-        bookID: UUID
-    ) -> String {
-
-        if sentence.speaker == .narrator {
-
-            return VoiceManager.narratorVoice()
-        }
-
-        guard let characterID = sentence.characterID else {
-            return VoiceManager.unnamedVoice()
-        }
-
-        guard let character = chapter.characters.first(
-            where: { $0.id == characterID }
-        ) else {
-            return VoiceManager.unnamedVoice()
-        }
-
-        if let existing = character.voiceID,
-           !existing.isEmpty,
-           existing != "default" {
-            return existing
-        }
-
-        return VoiceManager.voiceForCharacter(
-            gender: character.gender,
-            age: character.age,
             bookID: bookID
         )
     }
@@ -368,16 +350,12 @@ actor TTSGenerator {
     // MARK: - Unload
 
     func unloadModel() async {
-        if let mlxService = tts as? Qwen3TTSService {
-            await mlxService.unload()
-        }
-        if let kokoroService = tts as? SherpaKokoroTTSService {
-            await kokoroService.unload()
-        }
-        // 降级链会把真正的后端包在里层：只按具体类型转型的话，
-        // 走 Kokoro+Edge 这条路时一个模型都卸不掉，内存白放着。
-        if let fallbackService = tts as? FallbackTTSService {
-            await fallbackService.unloadAll()
-        }
+        await tts.unloadAll()
+    }
+
+    /// 现在（含在后台）还有没有能出声的后端。后台门禁用它决定要不要停整条合成队列，
+    /// 见 ``FallbackTTSService/hasBackgroundCapableSlot()``。
+    func canSynthesizeInBackground() async -> Bool {
+        await tts.hasBackgroundCapableSlot()
     }
 }

@@ -116,6 +116,11 @@ actor MLXQwenService: AIService {
         maxTokens: Int
     ) async throws -> String {
 
+        // 提交之前先问一次后台：MLX 在后台跑 GPU，驱动回调抛的是 C++
+        // `std::runtime_error`，Swift 的 catch 抓不住，进程直接 terminate。
+        // 唯一安全的做法是根本不提交。见 `AppBackgroundGate`。
+        try AppBackgroundGate.ensureForeground()
+
         if !isLoaded {
             MemoryProbe.log("LLM 加载 前")
             try await load()

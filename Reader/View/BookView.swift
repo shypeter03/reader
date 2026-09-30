@@ -26,7 +26,7 @@ struct CoverImage: View {
 
             ZStack {
 
-                // 没封面时用书名铺一张色卡占位，风格与详情页一致
+                // 没封面时用书名铺一张色卡占位
                 LinearGradient(
                     colors: [Color.indigo, Color.purple],
                     startPoint: .topLeading,
@@ -165,278 +165,147 @@ struct BookCoverTile: View {
     }
 }
 
-struct BookDetailView: View {
+/// 阅读页唤出的「目录」。
+///
+/// 它取代了原来单独一层的书籍详情页：图书 App 里目录是从正文上唤出来的，
+/// 一本书不该有两套「先看介绍、再翻章节列表、再进正文」的路径。
+/// 封面、作者、进度这些身份信息都留在这里，只是不再占一层页面。
+struct ChapterOutlineView: View {
 
     let book: Book
 
-    @State private var selectedChapter: ChapterDescriptor?
-    @State private var showReader = false
-    @State private var isAnalyzing = false
+    /// 正在读的那一章：高亮 + 打开时滚到它。
+    let currentChapterID: UUID
+
+    let onSelect: (ChapterDescriptor) -> Void
+
+    @Environment(\.dismiss)
+    private var dismiss
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
 
-                // MARK: - Book Header
+        NavigationStack {
 
-                bookHeader
-                    .padding(.horizontal, 20)
-                    .padding(.top, 20)
+            ScrollViewReader { proxy in
 
-                // MARK: - Continue Button
+                List {
 
-                continueButton
-                    .padding(.horizontal, 20)
-                    .padding(.top, 24)
+                    Section {
+                        header
+                            .listRowInsets(
+                                EdgeInsets(
+                                    top: 14,
+                                    leading: 16,
+                                    bottom: 14,
+                                    trailing: 16
+                                )
+                            )
+                            .listRowBackground(
+                                Color(.secondarySystemBackground)
+                            )
+                    }
 
-                // MARK: - Chapter List
+                    Section(
+                        "章节 · \(book.chapters.count)"
+                    ) {
 
-                chapterSection
-                    .padding(.top, 32)
+                        ForEach(
+                            book.chapters
+                        ) { descriptor in
+
+                            Button {
+
+                                onSelect(descriptor)
+                                dismiss()
+
+                            } label: {
+
+                                HStack {
+
+                                    Text(descriptor.title)
+                                        .foregroundStyle(
+                                            descriptor.id == currentChapterID
+                                                ? Color.accentColor
+                                                : .primary
+                                        )
+                                        .lineLimit(1)
+
+                                    Spacer()
+
+                                    if descriptor.id == currentChapterID {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption.bold())
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                            }
+                            .id(descriptor.id)
+                        }
+                    }
+                }
+                .onAppear {
+                    // 目录打开时停在正在读的那一章附近，而不是从第一页翻起
+                    proxy.scrollTo(currentChapterID, anchor: .center)
+                }
             }
-            .padding(.bottom, 40)
         }
-        .background(Color(.systemGroupedBackground))
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $selectedChapter) { descriptor in
-            ReaderView(
-                book: book,
-                chapterDescriptor: descriptor
-            )
-        }
+        .presentationDetents([.medium, .large])
     }
-}
 
-// MARK: - Book Header
+    private var header: some View {
 
-private extension BookDetailView {
+        HStack(alignment: .top, spacing: 14) {
 
-    var bookHeader: some View {
-        VStack(spacing: 18) {
-
-            // Cover
             CoverImage(
                 url: book.coverURL,
                 title: book.title
             )
-            .frame(width: 150, height: 210)
+            .frame(width: 62, height: 87)
             .clipShape(
-                RoundedRectangle(cornerRadius: 16)
-            )
-            .shadow(
-                color: .black.opacity(0.15),
-                radius: 15,
-                y: 8
+                RoundedRectangle(cornerRadius: 8)
             )
 
-            // Title
-            Text(book.title)
-                .font(.system(size: 26, weight: .bold))
-                .multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 5) {
 
-            // Author
-            if let author = book.author,
-               !author.isEmpty {
+                Text(book.title)
+                    .font(.headline)
+                    .lineLimit(2)
 
-                Text(author)
-                    .font(.subheadline)
+                if let author = book.author, !author.isEmpty {
+                    Text(author)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Text(progressText)
+                    .font(.caption)
+                    .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
 
-            // Info
-            HStack(spacing: 20) {
-
-                infoItem(
-                    value: "\(book.chapters.count)",
-                    title: "章节"
-                )
-
-                Divider()
-                    .frame(height: 28)
-
-                infoItem(
-                    value: currentChapterText,
-                    title: "当前"
-                )
-
-                Divider()
-                    .frame(height: 28)
-
-                infoItem(
-                    value: progressText,
-                    title: "进度"
-                )
-            }
-            .padding(.top, 4)
+            Spacer(minLength: 0)
         }
     }
 
-    func infoItem(
-        value: String,
-        title: String
-    ) -> some View {
-
-        VStack(spacing: 4) {
-
-            Text(value)
-                .font(.system(
-                    size: 16,
-                    weight: .semibold
-                ))
-
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(minWidth: 60)
-    }
-
-    var currentChapterText: String {
-        guard !book.chapters.isEmpty else {
-            return "-"
-        }
-
-        return String(min(
-            book.lastReadChapter + 1,
-            book.chapters.count
-        ))
-    }
-
-    var progressText: String {
+    /// 进度按章算：句子级位置要读 chapter.json 才知道分母。
+    ///
+    /// 用「当前高亮的那一章」而不是 `book.lastReadChapter`：阅读页切章后进度是异步
+    /// 落盘的，书单里那份 `book` 又是打开弹层时的快照，跟着它写就会和上面高亮的章对不上。
+    private var progressText: String {
 
         guard !book.chapters.isEmpty else {
-            return "0%"
+            return "还没开始"
         }
 
-        let progress =
-            Double(book.lastReadChapter + 1)
-            / Double(book.chapters.count)
+        let index = book.chapters.firstIndex {
+            $0.id == currentChapterID
+        } ?? book.lastReadChapter
 
-        return "\(Int(progress * 100))%"
-    }
-}
+        let current = min(index + 1, book.chapters.count)
+        let total = book.chapters.count
+        let percent = Int((Double(current) / Double(total) * 100).rounded())
 
-// MARK: - Continue
-
-private extension BookDetailView {
-
-    var continueButton: some View {
-
-        Button {
-            openContinueReading()
-        } label: {
-
-            HStack(spacing: 12) {
-
-                Image(systemName: "play.fill")
-                    .font(.system(size: 14, weight: .bold))
-
-                VStack(
-                    alignment: .leading,
-                    spacing: 3
-                ) {
-
-                    Text(
-                        book.lastReadChapter < book.chapters.count
-                        ? "继续阅读"
-                        : "开始阅读"
-                    )
-                    .font(.system(
-                        size: 16,
-                        weight: .semibold
-                    ))
-
-                    if !book.chapters.isEmpty {
-
-                        // 用章自己的标题，不写「第 N 章」：N 是数组下标，和书里印的
-                        // 章号是两套（前言占一格、正文从「第5章」起），并排看着像出错。
-                        Text(
-                            book.chapters.indices.contains(book.lastReadChapter)
-                                ? book.chapters[book.lastReadChapter].title
-                                : book.chapters[0].title
-                        )
-                        .font(.caption)
-                        .opacity(0.8)
-                        .lineLimit(1)
-                    }
-                }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .opacity(0.7)
-            }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 20)
-            .frame(height: 62)
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color.indigo,
-                        Color.purple
-                    ],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .clipShape(
-                RoundedRectangle(cornerRadius: 16)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    func openContinueReading() {
-
-        guard !book.chapters.isEmpty else {
-            return
-        }
-
-        let index = min(
-            book.lastReadChapter,
-            book.chapters.count - 1
-        )
-
-        selectedChapter =
-            book.chapters[index]
-    }
-}
-
-// MARK: - Chapters
-
-private extension BookDetailView {
-
-    var chapterSection: some View {
-
-        VStack(spacing: 0) {
-
-                ForEach(book.chapters) { descriptor in
-
-                    Button {
-
-                        selectedChapter = descriptor
-
-                    } label: {
-
-                        HStack {
-
-                            Text(descriptor.title)
-
-                            Spacer()
-
-                            Image(
-                                systemName: "chevron.right"
-                            )
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 14)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+        return "读到第 \(current)/\(total) 章 · \(percent)%"
     }
 }

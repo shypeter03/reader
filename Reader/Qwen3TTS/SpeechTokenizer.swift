@@ -512,8 +512,8 @@ public class DecoderTransformerAttention: Module {
     public func callAsFunction(_ x: MLXArray, mask: MLXArray?) -> MLXArray {
         let (B, L, _) = (x.dim(0), x.dim(1), x.dim(2))
 
-        var q = qProj(x).reshaped(B, L, numHeads, headDim).transposed(0, 2, 1, 3)
-        var k = kProj(x).reshaped(B, L, numKVHeads, headDim).transposed(0, 2, 1, 3)
+        let q = qProj(x).reshaped(B, L, numHeads, headDim).transposed(0, 2, 1, 3)
+        let k = kProj(x).reshaped(B, L, numKVHeads, headDim).transposed(0, 2, 1, 3)
         let v = vProj(x).reshaped(B, L, numKVHeads, headDim).transposed(0, 2, 1, 3)
 
         let output = MLXFast.scaledDotProductAttention(

@@ -639,6 +639,10 @@ public class Qwen3TTSModel: Module {
 
         // Autoregressive generation
         for _ in 0..<effectiveMaxTokens {
+            // 每帧问一次：这个循环是同步的，中间没有 await，协程没法自己让路。
+            // 调度器进后台时掐掉的是外面那个任务，而一次合成有几百帧——不在这里停，
+            // 被掐的任务照样一帧帧往 Metal 提交，而后台提交 GPU 就是 terminate。
+            if Task.isCancelled { throw CancellationError() }
             // Forward through Talker
             let (logits, hiddenStates) = talker(currentInput, cache: cache)
             eval(logits, hiddenStates)
@@ -852,6 +856,10 @@ public class Qwen3TTSModel: Module {
 
         // Autoregressive generation
         for _ in 0..<effectiveMaxTokens {
+            // 每帧问一次：这个循环是同步的，中间没有 await，协程没法自己让路。
+            // 调度器进后台时掐掉的是外面那个任务，而一次合成有几百帧——不在这里停，
+            // 被掐的任务照样一帧帧往 Metal 提交，而后台提交 GPU 就是 terminate。
+            if Task.isCancelled { throw CancellationError() }
             // Forward through Talker
             let (logits, hiddenStates) = talker(currentInput, cache: cache)
             eval(logits, hiddenStates)

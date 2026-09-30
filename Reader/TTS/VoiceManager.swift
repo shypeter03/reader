@@ -10,6 +10,10 @@ import Foundation
 /// CustomVoice 通过 `voice = "speaker, instruction"` 控制：
 /// - speaker 必须是模型 config.json 里 spk_id 表中的名字（大小写不敏感）；
 /// - instruction 用自然语言描述情绪 / 语速。
+///
+/// 这些 speaker 名同时是**全 App 的声音身份**：``CharacterRoster`` 存它、
+/// Edge 用 `speakerAlias` 翻译成神经语音、Kokoro 用 `KokoroVoiceMap.preferences` 翻译成
+/// sid。所以「某个人用哪把声音」只在这里定一次，三个后端各自翻译，不许再分叉。
 enum VoiceManager {
 
     // MARK: - CustomVoice Speakers
@@ -30,29 +34,41 @@ enum VoiceManager {
 
     private static let narratorSpeaker = "Uncle_Fu"
 
-    /// 所有「没有具体角色」的说话人（对白没写出说话人、人物性别未知）共用这把
-    /// 固定声音：磁性成年男声、标准普通话。同一个声音 = 同一个身份，
-    /// 用户不必每句重新适应「这人是谁」。
+    /// 无具体角色的说话人用的固定声音。**只剩系统合成还在用它当「没有角色可选」的标识**：
+    /// 朗读侧的无名句一律归到旁白那把嗓（见 ``voiceForCharacter`` 的 `.unknown` 分支），
+    /// 因为「这一句旁白 A、下一句旁白 B」正是这条需求禁止的听感，而老数据里那把无名嗓
+    /// 就是这一现象的主要来源（真书实测占正文 8~9% 的句子）。
     private static let unnamedSpeaker = "Ryan"
+
+    // MARK: - Named Character Pools
+
+    /// 有名有姓的人物按性别分池，同性别的人可以共用（用户要的只是「别男女不分、
+    /// 别同一个人两个嗓」）。旁白的 Uncle_Fu 不在池子里：他要一直当旁白，
+    /// 而「判不出性别的人」也归他（见 ``voiceForCharacter`` 的 `.unknown`）。
+    /// 池子里的次序一旦定了就别动：换序等于整本书同名人物换嗓，音频全部作废。
+    private static let malePool = ["Dylan", "Eric"]
+    private static let femalePool = ["Vivian", "Serena"]
 
     // MARK: - Voice Selection
 
-    static func voiceForCharacter(
-        gender: Gender,
-        age: AgeType,
-        bookID: UUID
-    ) -> String {
-
+    /// 这个名字的人在这本书里用哪把声音。
+    ///
+    /// 纯函数：只由（名字、性别）决定，不看章序、不看档案里还有谁。所以「第 30 章
+    /// 才出场的人物」不会把第 1 章那位挤到另一把嗓上——那正是「同一个人两句对话
+    /// 两个声音」的来路。
+    static func voiceForCharacter(name: String, gender: Gender) -> String {
         switch gender {
-
-        case .male:
-            return selectMaleSpeaker(age: age)
-
-        case .female:
-            return selectFemaleSpeaker(age: age)
-
-        case .unknown:
-            return unnamedSpeaker
+        case .male: return stablePick(name, from: malePool)
+        case .female: return stablePick(name, from: femalePool)
+        // 判不出性别的人**不给一把新嗓**：由旁白念。
+        //
+        // 原来这里落到无名嗓 Ryan，那是「旁白换人」最大的一处来源——真书实测有一到两成的
+        // 句子落在「有引号、认不出是谁说的」这一桶里（绍宋 1129/6447、赘婿 998、庆余年 538），
+        // 每一句都是一次 Uncle_Fu → Ryan → Uncle_Fu 的来回换人，听感正是「这一句旁白 A 说、
+        // 下一句旁白 B 说」。需求里「应该区分出男女」的反面读法就是**分不清男女就不分**：
+        // 宁可由旁白念，也不在叙述中间插一把来路不明的嗓。
+        // 认得出男女的人照旧各钉一把、全书不变（那条要求没动）。
+        case .unknown: return narratorSpeaker
         }
     }
 
@@ -70,44 +86,19 @@ enum VoiceManager {
         voiceID == unnamedSpeaker
     }
 
-    // MARK: - Speaker Selection by Age
-
-    private static func selectMaleSpeaker(age: AgeType) -> String {
-
-        switch age {
-
-        case .child, .young:
-            return "Dylan"
-
-        case .adult, .middleAged:
-            return "Eric"
-
-        case .old:
-            return "Uncle_Fu"
-
-        case .unknown:
-            return "Dylan"
+    /// 名字 → 池内一把，FNV-1a 取模：同一个名字永远落在同一个下标。
+    private static func stablePick(_ name: String, from pool: [String]) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in name.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
         }
-    }
-
-    private static func selectFemaleSpeaker(age: AgeType) -> String {
-
-        switch age {
-
-        case .child, .young:
-            return "Vivian"
-
-        case .adult, .middleAged, .old:
-            return "Serena"
-
-        case .unknown:
-            return "Vivian"
-        }
+        return pool[Int(hash % UInt64(pool.count))]
     }
 
     /// 一句话最终由哪个说话人朗读。调度器也比它：换了说话人就必须重录。
     static func resolvedVoice(for sentence: Sentence, in chapter: Chapter, bookID: UUID) -> String {
-        TTSGenerator.resolveVoiceID(
+        VoiceResolution.resolve(
             sentence: sentence,
             chapter: chapter,
             bookID: bookID

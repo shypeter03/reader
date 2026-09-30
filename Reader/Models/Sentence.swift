@@ -57,6 +57,13 @@ struct Sentence: Identifiable, Codable, Sendable {
 
     var duration: Double?
 
+    /// 这段音频是用哪把声音合成的（``VoiceManager`` 那套 speaker 名）。
+    ///
+    /// 必须存下来：音频按句缓存，而「这个人该用哪把声音」是会改口径的（人物档案
+    /// 补齐、声音池调整）。没有这一列，旧音频就无从对账——同一个人前后两句各一把嗓，
+    /// 而调度器看 audioURL 非空连重录都不会排。开章时按它判过期（见 `purgeReclaimedAudio`）。
+    var recordedVoiceID: String?
+
     var analysisStatus: SentenceAnalysisStatus
     var audioStatus: SentenceAudioStatus
 
@@ -122,7 +129,7 @@ struct Sentence: Identifiable, Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, index, text, type, speaker, characterID, characterName, emotion
         case emotionIntensity, speed, pitch, voiceStrength, startsParagraph
-        case audioURL, duration, analysisStatus, audioStatus
+        case audioURL, duration, recordedVoiceID, analysisStatus, audioStatus
     }
 
     init(from decoder: Decoder) throws {
@@ -147,6 +154,9 @@ struct Sentence: Identifiable, Codable, Sendable {
         startsParagraph = try c.decodeIfPresent(Bool.self, forKey: .startsParagraph) ?? true
         audioURL = try c.decodeIfPresent(URL.self, forKey: .audioURL)
         duration = try c.decodeIfPresent(Double.self, forKey: .duration)
+        // 旧版 chapter.json 没有这一列：留 nil，由开章那次对账按「当时全用旁白声 +
+        // 一把无名男声」的旧口径折算，见 ReaderPipeline 里的 `legacyVoice`。
+        recordedVoiceID = try c.decodeIfPresent(String.self, forKey: .recordedVoiceID)
         analysisStatus = try c.decodeIfPresent(SentenceAnalysisStatus.self, forKey: .analysisStatus) ?? .pending
         audioStatus = try c.decodeIfPresent(SentenceAudioStatus.self, forKey: .audioStatus) ?? (audioURL == nil ? .pending : .completed)
     }

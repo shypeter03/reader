@@ -1,31 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "微信图片_20260925091050_21_14.png",
-      "idiom" : "universal",
-      "platform" : "ios",
-      "size" : "1024x1024"
-    },
-    {
-      "appearances" : [
-        {
-          "appearance" : "luminosity",
-          "value" : "dark"
-        }
-      ],
-      "filename" : "微信图片_20260925091050_21_14 1.png",
-      "idiom" : "universal",
-      "platform" : "ios",
-      "size" : "1024x1024"
-    },
-    {
-      "appearances" : [
-        {
-          "appearance" : "luminosity",
-          "value" : "tinted"
-        }
-      ],
-      "filename" : "微信图片_20260925091050_21_14 2.png",
+      "filename" : "ChatGPT Image 2026年9月26日 15_47_48.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"

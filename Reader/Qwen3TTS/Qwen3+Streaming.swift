@@ -112,7 +112,7 @@ extension Qwen3TTSModel {
                         prefillTime: 0,
                         generateTime: totalTime,
                         tokensPerSecond: tokensPerSecond,
-                        peakMemoryUsage: Double(GPU.peakMemory) / 1e9
+                        peakMemoryUsage: Double(Memory.peakMemory) / 1e9
                     )
 
                     continuation.yield(.info(info))

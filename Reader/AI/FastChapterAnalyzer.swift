@@ -9,10 +9,34 @@ import Foundation
 
 actor FastChapterAnalyzer {
 
+    // MARK: - Scope
+
+    /// 一次章节标注要共用的上下文。承前需要整章的文本与段落标记，所以它们在循环外算一次
+    /// （放在循环里就是每句重摊一遍整章，实测 306 句的章会白多几毫秒）。
+    private struct Scope {
+        let bookID: UUID
+        let knownNames: Set<String>
+        /// 这本书引号配对干净、允许段内承前（见 ``CharacterRoster/allowsParagraphCarry``）。
+        let carry: Bool
+        let texts: [String]
+        let paragraphStarts: [Bool]
+    }
+
+    private func makeScope(_ chapter: Chapter, bookID: UUID) -> Scope {
+        Scope(
+            bookID: bookID,
+            knownNames: CharacterRoster.shared.names(bookID: bookID),
+            carry: CharacterRoster.shared.allowsParagraphCarry(bookID: bookID),
+            texts: chapter.sentences.map(\.text),
+            paragraphStarts: chapter.sentences.map(\.startsParagraph)
+        )
+    }
+
     // MARK: - Analyze
 
     func analyze(
         chapter: Chapter,
+        bookID: UUID,
         context: StoryContext
     ) async throws -> Chapter {
 
@@ -20,8 +44,9 @@ actor FastChapterAnalyzer {
 
         chapter.audioStatus = .analyzing
 
+        let scope = makeScope(chapter, bookID: bookID)
         for index in chapter.sentences.indices {
-            chapter.sentences[index] = annotate(chapter.sentences[index], in: &chapter)
+            chapter.sentences[index] = annotate(chapter.sentences[index], at: index, in: &chapter, scope: scope)
         }
 
         chapter.audioStatus = .pending
@@ -34,7 +59,7 @@ actor FastChapterAnalyzer {
     /// 避免每次翻章把更好的标注退回正则结果。
     /// 传 `range` 可把标注限制在播放位置附近：远处的句子留给 LLM 定参数，
     /// 正则那套强情绪指令不该抢先决定整章的听感。
-    func prime(_ chapter: Chapter, in range: Range<Int>? = nil) -> Chapter {
+    func prime(_ chapter: Chapter, bookID: UUID, in range: Range<Int>? = nil) -> Chapter {
 
         var chapter = chapter
 
@@ -42,9 +67,14 @@ actor FastChapterAnalyzer {
         let upper = min(chapter.sentences.count, range?.upperBound ?? chapter.sentences.count)
         guard lower < upper else { return chapter }
 
+        // 候选人名取自这一本书的人物档案：提示语被逗号切断时靠它救回说话人
+        // （见 `DialogueAttribution.personName(in:knownNames:)`）。调用方保证档案至少
+        // 覆盖到播放章及其前几章（ReaderPipeline 的 ensureRoster 排在合成之前），
+        // 所以这里通常查得到人；整本还在后台补，补上之后由漂移分支重录那几句。
+        let scope = makeScope(chapter, bookID: bookID)
         for index in lower..<upper
         where chapter.sentences[index].analysisStatus != .completed {
-            chapter.sentences[index] = annotate(chapter.sentences[index], in: &chapter)
+            chapter.sentences[index] = annotate(chapter.sentences[index], at: index, in: &chapter, scope: scope)
         }
 
         return chapter
@@ -52,15 +82,16 @@ actor FastChapterAnalyzer {
 
     private func annotate(
         _ sentence: Sentence,
-        in chapter: inout Chapter
+        at index: Int,
+        in chapter: inout Chapter,
+        scope: Scope
     ) -> Sentence {
 
-        let analysis = analyzeSentence(sentence.text)
+        let analysis = analyzeSentence(sentence.text, knownNames: scope.knownNames)
         var updated = sentence
 
         updated.type = analysis.type
         updated.speaker = analysis.speaker
-        updated.characterName = analysis.characterName
         updated.emotion = analysis.emotion
         updated.emotionIntensity = analysis.emotionIntensity
         updated.speed = analysis.speed
@@ -68,8 +99,23 @@ actor FastChapterAnalyzer {
         updated.voiceStrength = analysis.voiceStrength
         updated.analysisStatus = .completed
 
-        if analysis.speaker == .character,
-           let characterName = analysis.characterName {
+        // 这句台词自己认不出人时试着借同段上一句的（规则与闸门都在 ``CharacterAnalysis/carriedSpeaker``）。
+        // 借来的名字只许复用**已经在档案里的人**，所以它不会给任何人开新嗓，也就没有
+        // 「同一个人两句换个声音」的风险——那是需求里明确禁止的，而认不出退回无名嗓是一致且无害的。
+        var characterName = analysis.characterName
+        if analysis.type == .dialogue, characterName == nil {
+            characterName = CharacterAnalysis.carriedSpeaker(
+                at: index,
+                texts: scope.texts,
+                paragraphStarts: scope.paragraphStarts,
+                knownNames: scope.knownNames,
+                rosterName: { CharacterRoster.shared.person(bookID: scope.bookID, name: $0)?.name },
+                enabled: scope.carry
+            )
+        }
+        updated.characterName = characterName
+
+        if analysis.speaker == .character, let characterName {
 
             if let character = chapter.characters.first(where: { $0.name == characterName }) {
                 updated.characterID = character.id
@@ -90,6 +136,57 @@ actor FastChapterAnalyzer {
     func unloadModel() async {
     }
 
+    /// 只重算「这句是谁说的」：提取口径升级后给已经落库的老章节补说话人。
+    ///
+    /// 情绪、语速、强度一个字段都不碰——那些可能有 LLM 校准过的好结果，重跑一遍正则
+    /// 会把它们冲掉。正文与音频也不碰：声音真的变了的那几句由 ``ReaderPipeline``
+    /// 的漂移分支退回待合成，这里只负责把「谁在说话」这件事回到当前口径上。
+    /// `characters` 整份重建：旧档案里的「认真」这种脏名随之消失，章内人名和句子重新对得上。
+    func refreshSpeakers(_ chapter: Chapter, bookID: UUID) -> Chapter {
+        var chapter = chapter
+        var characters: [Character] = []
+        let scope = makeScope(chapter, bookID: bookID)
+        for index in chapter.sentences.indices {
+            var sentence = chapter.sentences[index]
+            let (type, direct) = speakerOnly(sentence.text, knownNames: scope.knownNames)
+            // 迁移也要走承前：否则「已存章节按老口径重标」这一遍会把新规则借到的名字漏掉，
+            // 同一句话在迁移前后落到两把嗓上，正是「一个人两段对话换个声音」。
+            let name = direct ?? CharacterAnalysis.carriedSpeaker(
+                at: index,
+                texts: scope.texts,
+                paragraphStarts: scope.paragraphStarts,
+                knownNames: scope.knownNames,
+                rosterName: { CharacterRoster.shared.person(bookID: scope.bookID, name: $0)?.name },
+                enabled: type == .dialogue && scope.carry
+            )
+            sentence.type = type
+            sentence.speaker = type == .dialogue ? .character : .narrator
+            sentence.characterName = name
+            sentence.characterID = nil
+            if type == .dialogue, let name {
+                if let existing = characters.first(where: { $0.name == name }) {
+                    sentence.characterID = existing.id
+                } else {
+                    let created = Character(name: name, gender: .unknown, age: .unknown)
+                    characters.append(created)
+                    sentence.characterID = created.id
+                }
+            }
+            chapter.sentences[index] = sentence
+        }
+        chapter.characters = characters
+        return chapter
+    }
+
+    /// 只回答「这句是不是台词、是谁说的」。迁移用这一条，不走 ``analyzeSentence``：
+    /// 情绪那几百个线索词（``lexicon``）在这里跑一遍是白跑——结果马上被丢掉，而它占了
+    /// 整次迁移九成时间（实测 306 句：带字典 121ms，不带 16ms）。
+    private func speakerOnly(_ text: String, knownNames: Set<String>) -> (SentenceType, String?) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, containsDialogue(trimmed) else { return (.narration, nil) }
+        return (.dialogue, DialogueAttribution.personName(in: trimmed, knownNames: knownNames))
+    }
+
     // MARK: - Sentence Analysis
 
     private struct SentenceAnalysis {
@@ -103,7 +200,7 @@ actor FastChapterAnalyzer {
         let voiceStrength: Double
     }
 
-    private func analyzeSentence(_ text: String) -> SentenceAnalysis {
+    private func analyzeSentence(_ text: String, knownNames: Set<String>) -> SentenceAnalysis {
 
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -123,7 +220,7 @@ actor FastChapterAnalyzer {
         let hasDialogue = containsDialogue(trimmed)
 
         if hasDialogue {
-            return analyzeDialogue(trimmed)
+            return analyzeDialogue(trimmed, knownNames: knownNames)
         } else {
             return analyzeNarration(trimmed)
         }
@@ -131,57 +228,33 @@ actor FastChapterAnalyzer {
 
     // MARK: - Dialogue Detection
 
+    private static let quotePairs: [(open: String.Element, close: String.Element)] = [
+        ("\u{201C}", "\u{201D}"), ("\u{2018}", "\u{2019}"),
+        ("「", "」"), ("『", "』"),
+    ]
+
+    /// 这一句里有没有「一段引起来的话」。四对引号扫一遍就行——原来是每句现编译四条
+    /// NSRegularExpression，整章迁移实测 0.3ms/句 全花在编译上（300 句 120ms 起跳）。
     private func containsDialogue(_ text: String) -> Bool {
-
-        let dialoguePatterns = [
-            "\u{201C}[^\u{201D}]*\u{201D}",
-            "\u{2018}[^\u{2019}]*\u{2019}",
-            "\u{300C}[^\u{300D}]*\u{300D}",
-            "\u{300E}[^\u{300F}]*\u{300F}"
-        ]
-
-        for pattern in dialoguePatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-                let range = NSRange(text.startIndex..<text.endIndex, in: text)
-                if regex.firstMatch(in: text, options: [], range: range) != nil {
-                    return true
-                }
+        for pair in Self.quotePairs {
+            var opened = false
+            for character in text {
+                if character == pair.open { opened = true }
+                else if character == pair.close, opened { return true }
             }
         }
-
         return false
     }
 
     // MARK: - Dialogue Analysis
 
-    private func analyzeDialogue(_ text: String) -> SentenceAnalysis {
+    private func analyzeDialogue(_ text: String, knownNames: Set<String>) -> SentenceAnalysis {
 
-        var speakerName: String? = nil
-
-        let speakerPatterns = [
-            "([^，。！？\\s]{1,10})说道[：:]",
-            "([^，。！？\\s]{1,10})说[：:]",
-            "([^，。！？\\s]{1,10})问道[：:]",
-            "([^，。！？\\s]{1,10})问[：:]",
-            "([^，。！？\\s]{1,10})喊道[：:]",
-            "([^，。！？\\s]{1,10})喊[：:]",
-            "([^，。！？\\s]{1,10})叫道[：:]",
-            "([^，。！？\\s]{1,10})叫[：:]",
-            "([^，。！？\\s]{1,10})答道[：:]",
-            "([^，。！？\\s]{1,10})答[：:]"
-        ]
-
-        for pattern in speakerPatterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: []) {
-                let range = NSRange(text.startIndex..<text.endIndex, in: text)
-                if let match = regex.firstMatch(in: text, options: [], range: range) {
-                    if let nameRange = Range(match.range(at: 1), in: text) {
-                        speakerName = String(text[nameRange])
-                        break
-                    }
-                }
-            }
-        }
+        // 说话人提取和书级人物分析（``CharacterAnalysis``）走同一份口径：两边各认各的
+        // 名字，同一个人就会在档案里成两个人、两句换个嗓。
+        // `knownNames` 是档案里那批人：提示语被逗号切断时（「宁毅看着她，低声道：“…”」）
+        // 靠他们把说话人救回来——严格口径在真书上只认得出 20% 的台词。
+        let speakerName = DialogueAttribution.personName(in: text, knownNames: knownNames)
 
         let detected = detectEmotion(from: text)
         let speed = detectSpeed(from: text, emotion: detected.emotion)

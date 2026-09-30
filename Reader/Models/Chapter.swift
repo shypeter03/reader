@@ -42,6 +42,11 @@ struct Chapter: Identifiable, Codable, Sendable {
     /// 都跑 parser，所以规则一变就得有个东西认出旧数据——对不上的章节重解析一次。
     var textVersion: Int
 
+    /// 「这句是谁说的」是按哪一版说话人提取口径算出来的（``DialogueAttribution/annotationVersion``）。
+    /// 和 textVersion 分开记：提取口径改了不必重切正文，只重算说话人，
+    /// 情绪参数与已有音频都留着——声音变了的句子交给漂移分支单独退回重录。
+    var annotationVersion: Int
+
     init(
         id: UUID = UUID(),
         index: Int,
@@ -52,7 +57,8 @@ struct Chapter: Identifiable, Codable, Sendable {
         textStatus: TextStatus = .available,
         analysisStatus: AnalysisStatus = .pending,
         ttsStatus: TTSStatus = .pending,
-        textVersion: Int = SentenceSplitter.textVersion
+        textVersion: Int = SentenceSplitter.textVersion,
+        annotationVersion: Int = DialogueAttribution.annotationVersion
     ) {
         self.id = id
         self.index = index
@@ -64,11 +70,12 @@ struct Chapter: Identifiable, Codable, Sendable {
         self.analysisStatus = analysisStatus
         self.ttsStatus = ttsStatus
         self.textVersion = textVersion
+        self.annotationVersion = annotationVersion
     }
 
     enum CodingKeys: String, CodingKey {
         case id, index, title, sentences, characters, audioStatus
-        case textStatus, analysisStatus, ttsStatus, textVersion
+        case textStatus, analysisStatus, ttsStatus, textVersion, annotationVersion
     }
 
     init(from decoder: Decoder) throws {
@@ -84,5 +91,6 @@ struct Chapter: Identifiable, Codable, Sendable {
         ttsStatus = try c.decodeIfPresent(TTSStatus.self, forKey: .ttsStatus) ?? .pending
         // 缺字段就是「规则改过之前存的」，不能沿用当前版本号：兜底成 0 让它重解析一次。
         textVersion = try c.decodeIfPresent(Int.self, forKey: .textVersion) ?? 0
+        annotationVersion = try c.decodeIfPresent(Int.self, forKey: .annotationVersion) ?? 0
     }
 }

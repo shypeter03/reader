@@ -85,6 +85,21 @@ actor ChapterStore {
         return FileManager.default.fileExists(atPath: fileURL.path)
     }
 
+    /// 这本书落库过哪些章。人物档案要扫整本书，而它手上常常只有 bookID（任务队列里
+    /// 就是这个形状），不能反过来等 UI 把 `Book` 递进来。
+    /// 顺序按目录名的时间戳无从谈起，就按章 id 排——反正扫书不分先后。
+    func chapterIDs(bookID: UUID) -> [UUID] {
+        let directory = rootURL
+            .appendingPathComponent(bookID.uuidString, isDirectory: true)
+            .appendingPathComponent("chapters", isDirectory: true)
+        guard let list = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return list.compactMap { UUID(uuidString: $0.lastPathComponent) }.sorted { $0.uuidString < $1.uuidString }
+    }
+
     // MARK: - Delete
 
     func delete(

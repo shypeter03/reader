@@ -20,6 +20,7 @@
 		52221420303EE5930022E4E3 /* Chapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222141F303EE5930022E4E3 /* Chapter.swift */; };
 		52221422303EE5AA0022E4E3 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221421303EE5AA0022E4E3 /* Book.swift */; };
 		52AA000030AA000000000A02 /* PageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000A01 /* PageLayout.swift */; };
+		52AA000030AA000000000D02 /* AppLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000D01 /* AppLog.swift */; };
 		52221425303EE6040022E4E3 /* BookParing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221424303EE6040022E4E3 /* BookParing.swift */; };
 		5222142A303EE66A0022E4E3 /* AIAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221429303EE66A0022E4E3 /* AIAnalysis.swift */; };
 		5222142D303EE68B0022E4E3 /* AIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222142C303EE68B0022E4E3 /* AIService.swift */; };
@@ -38,12 +39,16 @@
 		52221442303EE80D0022E4E3 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221441303EE80D0022E4E3 /* LibraryView.swift */; };
 		52221444303EE86E0022E4E3 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221443303EE86E0022E4E3 /* ReaderView.swift */; };
 		52AA000030AA000000000B02 /* ReaderPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000B01 /* ReaderPageView.swift */; };
+		52AA000030AA000000000B12 /* CurlPageTurner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000B11 /* CurlPageTurner.swift */; };
+		52AA000030AA000000000B22 /* TurnSpine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000B21 /* TurnSpine.swift */; };
+		52AA000030AA000000000C02 /* LaunchSplash.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000C01 /* LaunchSplash.swift */; };
 		52221446303EE8920022E4E3 /* BookView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221445303EE8920022E4E3 /* BookView.swift */; };
 		52221448303EE8BD0022E4E3 /* SentenceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221447303EE8BD0022E4E3 /* SentenceView.swift */; };
 		5222144A303EE8D40022E4E3 /* PlayBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221449303EE8D40022E4E3 /* PlayBar.swift */; };
 		5222144C303EE9790022E4E3 /* ChapterRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222144B303EE9790022E4E3 /* ChapterRow.swift */; };
 		5222144E303EE9EC0022E4E3 /* PlayerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222144D303EE9EC0022E4E3 /* PlayerManager.swift */; };
-		52221450303EEA1E0022E4E3 /* PlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222144F303EEA1E0022E4E3 /* PlayerView.swift */; };
+		52CC000030CC000000000201 /* NowPlayingController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52CC000030CC000000000101 /* NowPlayingController.swift */; };
+		52CC000030CC000000000202 /* BackgroundAudioHold.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52CC000030CC000000000102 /* BackgroundAudioHold.swift */; };
 		52221452303EEA550022E4E3 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221451303EEA550022E4E3 /* SettingsView.swift */; };
 		52221455303EF36B0022E4E3 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 52221454303EF36B0022E4E3 /* ZIPFoundation */; };
 		52221457303EF3A80022E4E3 /* EPUBParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221456303EF3A80022E4E3 /* EPUBParser.swift */; };
@@ -75,12 +80,15 @@
 		52B0C6E3303FE2F20073EED6 /* QwenChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52B0C6E0303FE0D00073EED6 /* QwenChapterAnalyzer.swift */; };
 		52B0C6E4303FE2F20073EED6 /* AIJSONDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CECA1303FAA7200260A94 /* AIJSONDecoder.swift */; };
 		52C1D7013050000000000001 /* VoiceManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7003050000000000001 /* VoiceManager.swift */; };
+		52AA000030AA000000001002 /* VoiceResolution.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000001001 /* VoiceResolution.swift */; };
 		52C1D7113051000000000001 /* ChapterCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7103051000000000001 /* ChapterCache.swift */; };
 		52C1D7133051000000000003 /* BookStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7123051000000000003 /* BookStore.swift */; };
 		52C1D7153051000000000005 /* FastChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7143051000000000005 /* FastChapterAnalyzer.swift */; };
 		52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7203060000000000001 /* EdgeTTSService.swift */; };
 		52C1EC073090000000000002 /* FallbackTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1EC073090000000000001 /* FallbackTTSService.swift */; };
 		52C1D7233060000000000003 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7223060000000000003 /* ChapterStore.swift */; };
+		52AA000030AA000000000E02 /* CharacterAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000E01 /* CharacterAnalysis.swift */; };
+		52AA000030AA000000000F02 /* CharacterRoster.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000F01 /* CharacterRoster.swift */; };
 		52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */; };
 		523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */; };
 		52C1EC063090000000000002 /* kokoro-int8-multi-lang-v1_1 in Resources */ = {isa = PBXBuildFile; fileRef = 52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */; };
@@ -120,6 +128,7 @@
 		522213E7303EE4160022E4E3 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		522213E9303EE4170022E4E3 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		522213EC303EE4170022E4E3 /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
+		52FA1B0030BB000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		522213F2303EE4170022E4E3 /* ReaderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		522213F6303EE4170022E4E3 /* ReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderTests.swift; sourceTree = "<group>"; };
 		522213FC303EE4170022E4E3 /* ReaderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ReaderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -131,6 +140,7 @@
 		5222141F303EE5930022E4E3 /* Chapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chapter.swift; sourceTree = "<group>"; };
 		52221421303EE5AA0022E4E3 /* Book.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Book.swift; sourceTree = "<group>"; };
 		52AA000030AA000000000A01 /* PageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageLayout.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000D01 /* AppLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLog.swift; sourceTree = "<group>"; };
 		52221424303EE6040022E4E3 /* BookParing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookParing.swift; sourceTree = "<group>"; };
 		52221429303EE66A0022E4E3 /* AIAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAnalysis.swift; sourceTree = "<group>"; };
 		5222142C303EE68B0022E4E3 /* AIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIService.swift; sourceTree = "<group>"; };
@@ -149,12 +159,18 @@
 		52221441303EE80D0022E4E3 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
 		52221443303EE86E0022E4E3 /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
 		52AA000030AA000000000B01 /* ReaderPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPageView.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000B11 /* CurlPageTurner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurlPageTurner.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000B21 /* TurnSpine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnSpine.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000C01 /* LaunchSplash.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchSplash.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000E01 /* CharacterAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacterAnalysis.swift; sourceTree = "<group>"; };
+		52AA000030AA000000000F01 /* CharacterRoster.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CharacterRoster.swift; sourceTree = "<group>"; };
 		52221445303EE8920022E4E3 /* BookView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookView.swift; sourceTree = "<group>"; };
 		52221447303EE8BD0022E4E3 /* SentenceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentenceView.swift; sourceTree = "<group>"; };
 		52221449303EE8D40022E4E3 /* PlayBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayBar.swift; sourceTree = "<group>"; };
 		5222144B303EE9790022E4E3 /* ChapterRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterRow.swift; sourceTree = "<group>"; };
 		5222144D303EE9EC0022E4E3 /* PlayerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerManager.swift; sourceTree = "<group>"; };
-		5222144F303EEA1E0022E4E3 /* PlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerView.swift; sourceTree = "<group>"; };
+		52CC000030CC000000000101 /* NowPlayingController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingController.swift; sourceTree = "<group>"; };
+		52CC000030CC000000000102 /* BackgroundAudioHold.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundAudioHold.swift; sourceTree = "<group>"; };
 		52221451303EEA550022E4E3 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		52221456303EF3A80022E4E3 /* EPUBParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBParser.swift; sourceTree = "<group>"; };
 		52221459303EF3FF0022E4E3 /* HTMLExtractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLExtractor.swift; sourceTree = "<group>"; };
@@ -171,6 +187,7 @@
 		52B0C6DE303FDF560073EED6 /* ReaderContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContainer.swift; sourceTree = "<group>"; };
 		52B0C6E0303FE0D00073EED6 /* QwenChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QwenChapterAnalyzer.swift; sourceTree = "<group>"; };
 		52C1D7003050000000000001 /* VoiceManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceManager.swift; sourceTree = "<group>"; };
+		52AA000030AA000000001001 /* VoiceResolution.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceResolution.swift; sourceTree = "<group>"; };
 		52C1D7103051000000000001 /* ChapterCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterCache.swift; sourceTree = "<group>"; };
 		52C1D7123051000000000003 /* BookStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookStore.swift; sourceTree = "<group>"; };
 		52C1D7143051000000000005 /* FastChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FastChapterAnalyzer.swift; sourceTree = "<group>"; };
@@ -264,6 +281,7 @@
 				52221440303EE7FC0022E4E3 /* View */,
 				5222143D303EE7540022E4E3 /* Core */,
 				5222143A303EE73E0022E4E3 /* Playback */,
+				52CC000030CC000000000301 /* Audio */,
 				52221435303EE6F10022E4E3 /* Storage */,
 				52221430303EE6C50022E4E3 /* TTS */,
 				52C1DB103080000000000010 /* Qwen3TTS */,
@@ -271,6 +289,7 @@
 				52221423303EE5ED0022E4E3 /* Parsing */,
 				52221418303EE5320022E4E3 /* Models */,
 				522213E5303EE4160022E4E3 /* ReaderApp.swift */,
+				52FA1B0030BB000000000001 /* Info.plist */,
 				522213E7303EE4160022E4E3 /* ContentView.swift */,
 				522213E9303EE4170022E4E3 /* Assets.xcassets */,
 				522213EB303EE4170022E4E3 /* Preview Content */,
@@ -341,6 +360,7 @@
 				5222142E303EE6AB0022E4E3 /* ChapterAnalyzer.swift */,
 				52221461303F03B90022E4E3 /* MLXQwenService.swift */,
 				52C1D7143051000000000005 /* FastChapterAnalyzer.swift */,
+				52AA000030AA000000000E01 /* CharacterAnalysis.swift */,
 			);
 			path = AI;
 			sourceTree = "<group>";
@@ -356,6 +376,7 @@
 				52221431303EE6D40022E4E3 /* TTSService.swift */,
 				52221438303EE7160022E4E3 /* TTSGenerator.swift */,
 				52C1D7003050000000000001 /* VoiceManager.swift */,
+				52AA000030AA000000001001 /* VoiceResolution.swift */,
 				52C1EC033090000000000001 /* SherpaKokoro */,
 			);
 			path = TTS;
@@ -379,6 +400,7 @@
 				52C1D7103051000000000001 /* ChapterCache.swift */,
 				52C1D7123051000000000003 /* BookStore.swift */,
 				52C1D7223060000000000003 /* ChapterStore.swift */,
+				52AA000030AA000000000F01 /* CharacterRoster.swift */,
 				52C1F0013099000000000001 /* ReaderCache.swift */,
 			);
 			path = Storage;
@@ -392,11 +414,21 @@
 			path = Playback;
 			sourceTree = "<group>";
 		};
+		52CC000030CC000000000301 /* Audio */ = {
+			isa = PBXGroup;
+			children = (
+				52CC000030CC000000000101 /* NowPlayingController.swift */,
+				52CC000030CC000000000102 /* BackgroundAudioHold.swift */,
+			);
+			path = Audio;
+			sourceTree = "<group>";
+		};
 		5222143D303EE7540022E4E3 /* Core */ = {
 			isa = PBXGroup;
 			children = (
 				52B0C6DE303FDF560073EED6 /* ReaderContainer.swift */,
 				5222143E303EE7610022E4E3 /* ReaderPipeline.swift */,
+				52AA000030AA000000000D01 /* AppLog.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
@@ -406,13 +438,15 @@
 			children = (
 				52221441303EE80D0022E4E3 /* LibraryView.swift */,
 				52AA000030AA000000000B01 /* ReaderPageView.swift */,
+				52AA000030AA000000000B11 /* CurlPageTurner.swift */,
+				52AA000030AA000000000C01 /* LaunchSplash.swift */,
 				52221443303EE86E0022E4E3 /* ReaderView.swift */,
+				52AA000030AA000000000B21 /* TurnSpine.swift */,
 				52221445303EE8920022E4E3 /* BookView.swift */,
 				52221447303EE8BD0022E4E3 /* SentenceView.swift */,
 				52221449303EE8D40022E4E3 /* PlayBar.swift */,
 				5222144B303EE9790022E4E3 /* ChapterRow.swift */,
 				5222144D303EE9EC0022E4E3 /* PlayerManager.swift */,
-				5222144F303EEA1E0022E4E3 /* PlayerView.swift */,
 				52221451303EEA550022E4E3 /* SettingsView.swift */,
 			);
 			path = View;
@@ -614,25 +648,31 @@
 			files = (
 				52B0C6E2303FE2F20073EED6 /* SystemTTSService.swift in Sources */,
 				52C1D7013050000000000001 /* VoiceManager.swift in Sources */,
+				52AA000030AA000000001002 /* VoiceResolution.swift in Sources */,
+				52CC000030CC000000000201 /* NowPlayingController.swift in Sources */,
+				52CC000030CC000000000202 /* BackgroundAudioHold.swift in Sources */,
 				5235D15830411F65006B7E3A /* SpeechAudioBridge.swift in Sources */,
 				52B0C6E3303FE2F20073EED6 /* QwenChapterAnalyzer.swift in Sources */,
 				52B0C6E4303FE2F20073EED6 /* AIJSONDecoder.swift in Sources */,
 				5222142D303EE68B0022E4E3 /* AIService.swift in Sources */,
 				5222144A303EE8D40022E4E3 /* PlayBar.swift in Sources */,
 				52221444303EE86E0022E4E3 /* ReaderView.swift in Sources */,
+				52AA000030AA000000000B22 /* TurnSpine.swift in Sources */,
 				52AA000030AA000000000B02 /* ReaderPageView.swift in Sources */,
+				52AA000030AA000000000B12 /* CurlPageTurner.swift in Sources */,
+				52AA000030AA000000000C02 /* LaunchSplash.swift in Sources */,
 				52221446303EE8920022E4E3 /* BookView.swift in Sources */,
 				522213E8303EE4160022E4E3 /* ContentView.swift in Sources */,
 				52B0C6DF303FDF5B0073EED6 /* ReaderContainer.swift in Sources */,
 				52221434303EE6E40022E4E3 /* AudioSegment.swift in Sources */,
 				5222143C303EE7480022E4E3 /* TimelineBuilder.swift in Sources */,
-				52221450303EEA1E0022E4E3 /* PlayerView.swift in Sources */,
 				525CECB3303FB21000260A94 /* AITools.swift in Sources */,
 				52221420303EE5930022E4E3 /* Chapter.swift in Sources */,
 				5222141E303EE5820022E4E3 /* Sentence.swift in Sources */,
 				52221422303EE5AA0022E4E3 /* Book.swift in Sources */,
 				5222145E303EF7C10022E4E3 /* EPUBBook.swift in Sources */,
 				52AA000030AA000000000A02 /* PageLayout.swift in Sources */,
+				52AA000030AA000000000D02 /* AppLog.swift in Sources */,
 				525CEC9E303FA9FC00260A94 /* AIError.swift in Sources */,
 				52221462303F03B90022E4E3 /* MLXQwenService.swift in Sources */,
 				5222144E303EE9EC0022E4E3 /* PlayerManager.swift in Sources */,
@@ -644,6 +684,7 @@
 				52C1D7113051000000000001 /* ChapterCache.swift in Sources */,
 				52C1D7133051000000000003 /* BookStore.swift in Sources */,
 				52C1D7153051000000000005 /* FastChapterAnalyzer.swift in Sources */,
+				52AA000030AA000000000E02 /* CharacterAnalysis.swift in Sources */,
 				52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */,
 				52C1EC073090000000000002 /* FallbackTTSService.swift in Sources */,
 				52C1DB013080000000000002 /* Qwen3TTSService.swift in Sources */,
@@ -658,6 +699,7 @@
 				52C1DB0A3080000000000002 /* SpeechTokenizerEncoder.swift in Sources */,
 				52C1DB0B3080000000000002 /* Talker.swift in Sources */,
 				52C1D7233060000000000003 /* ChapterStore.swift in Sources */,
+				52AA000030AA000000000F02 /* CharacterRoster.swift in Sources */,
 				5222143F303EE7610022E4E3 /* ReaderPipeline.swift in Sources */,
 				52221432303EE6D40022E4E3 /* TTSService.swift in Sources */,
 				52C1EC023090000000000001 /* TTSEngineType.swift in Sources */,
@@ -845,9 +887,10 @@
 				DEVELOPMENT_TEAM = 4F4D8965A7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Reader/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
@@ -875,9 +918,10 @@
 				DEVELOPMENT_TEAM = 4F4D8965A7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Reader/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;

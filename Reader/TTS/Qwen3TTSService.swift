@@ -66,6 +66,12 @@ actor Qwen3TTSService: TTSService {
         return root
     }
 
+    /// 权重在不在 app bundle 里。**只查目录，不加载、不碰推理**：TTS 外层用它决定
+    /// 这一格要不要试（缺权重是结构性不可用，不该拿四次失败去撞）。
+    nonisolated static func modelAvailable() -> Bool {
+        Bundle.main.url(forResource: bundleResourceName, withExtension: nil) != nil
+    }
+
     private static func missingComponents(in url: URL) -> [String] {
 
         let fm = FileManager.default
@@ -187,6 +193,10 @@ actor Qwen3TTSService: TTSService {
         pitch: Double,
         voiceStrength: Double
     ) async throws -> Data {
+
+        // 提交之前先问后台：这条链路是 MLX，在后台跑 GPU 会让驱动抛出 Swift 抓不住的
+        // C++ `std::runtime_error`（进程 terminate）。见 `AppBackgroundGate`。
+        try AppBackgroundGate.ensureForeground()
 
         if !isLoaded {
             try await load()
