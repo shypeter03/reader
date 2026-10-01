@@ -81,7 +81,13 @@ enum DialogueAttribution {
     /// 问了句），一条都拦不住。六本真书实测：切掉的句子十句里七句本来就归旁白，
     /// 剩下的是「嗯，」「善，」这种单字应答——它们原先是把**整段叙述**交给某个角色念。
     /// 同一条改「这句是谁说的」，老章节再重认一遍。
-    static let annotationVersion = 8
+    /// 9：认出来的串**先跟档案对一遍再落库**（``personName(in:knownNames:)``，档案之外的
+    /// 那一截由 ``CharacterRoster/fold(_:folds:)`` 按全书出场次数折）。以前对得上
+    /// 也照原样存，于是句子上挂的是「韩世忠骤」「赵玖恍然」这种被提示语多吃了一个字的串，
+    /// 而档案里是「韩世忠」「赵玖」——查声靠 ``CharacterRoster`` 的前缀折叠还归同一把嗓，
+    /// 可这个人的「说过几次话」被自己的残渣分掉了，入档闸门（说≥2、被称呼≥1）反倒过不去，
+    /// 台词便整句退回旁白嗓。改的是**存下来的说话人是谁**，老章节重认一遍。
+    static let annotationVersion = 9
 
     static let minNameLength = 2
     static let maxNameLength = 4
@@ -556,30 +562,36 @@ enum DialogueAttribution {
         // 不经 `personName(in:)`，只在上半道拦等于放过了「叙述里点了人名 + 一段引用」这一大类。
         guard speaksInThisSentence(text) else { return nil }
         if let strict = personName(in: text) {
-            guard !knownNames.isEmpty, matchesPool(strict, knownNames: knownNames) == nil else {
-                return strict
-            }
+            // 档案里已经有这个人，就落到**档案里那一串**上。查声那边本来就会按前缀把
+            // 「韩世忠骤」折到「韩世忠」（``CharacterRoster/person``），名字却照原样存着——
+            // 同一个人的证据被自己的残渣分成几条，「说过几次话」每条都不够入档闸门。
+            if let folded = folded(name: strict, pool: knownNames) { return folded }
+            guard !knownNames.isEmpty else { return strict }
             return poolName(in: text, knownNames: knownNames) ?? strict
         }
         return poolName(in: text, knownNames: knownNames)
     }
 
-    /// 这串在档案池里对得上谁：原串、剥称呼的词干、更短的前缀、更长的后缀都算。
+    /// 这串在候选池里对得上谁：原串、剥称呼的词干、更短的前缀、更长的后缀都算。
     /// 与 ``CharacterRoster/person(bookID:name:)`` 的折叠方向保持一致，否则提取侧认为
     /// 「档案里有这个人」而查声查不到，同一个人就两句两嗓。
-    private static func matchesPool(_ name: String, knownNames: Set<String>) -> String? {
-        if knownNames.contains(name) { return name }
+    ///
+    /// 标注落库前也用它折一次（``CharacterRoster/renamePool(bookID:)`` 给的那个大池子）：
+    /// 书刚开始扫、真名还没攒够「说过两次话」的时候，档案里没有韩世忠，可句子上已经挂着
+    /// 「韩世忠骤」了——那正是「把单词解析为人物」被看见的地方。
+    static func folded(name: String, pool: Set<String>) -> String? {
+        if pool.contains(name) { return name }
         let stem = stem(name)
-        if knownNames.contains(stem) { return stem }
+        if pool.contains(stem) { return stem }
         // 前缀、后缀都只试这串自己的几截（≤3 截），不做「拿整池名字来比」的 O(池子) 扫描：
         // 每一句都要查一次，整池扫描的成本会在迁移那种一次性遍历里放大成几百毫秒。
         for length in stride(from: name.count - 1, through: minNameLength, by: -1)
-        where knownNames.contains(String(name.prefix(length))) {
+        where pool.contains(String(name.prefix(length))) {
             return String(name.prefix(length))
         }
         for start in 0..<name.count {
             let suffix = String(name.dropFirst(start))
-            if suffix.count >= minNameLength, knownNames.contains(suffix) { return suffix }
+            if suffix.count >= minNameLength, pool.contains(suffix) { return suffix }
         }
         return nil
     }

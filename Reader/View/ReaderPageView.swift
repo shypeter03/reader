@@ -24,6 +24,12 @@ struct ReaderPageBody: View {
     /// 行距档位。必须和 `PageLayout.paginate` 喂的是同一个数，否则页高算错。
     let lineScale: Double
 
+    /// 垂直对齐：这一页每条行距缝在基础行距上再多抬这么多，把末行压到版心底。
+    /// 来自 `PageLayout.pageStretch`（分页时按这一页剩下的余量算出来），章末页是 0。
+    /// 渲染端把它同时加到 `.lineSpacing` 和段前白 `gap` 里含的那个 `lineSpacing` 上——
+    /// 分页摊余量时正是按「这两类缝一起抬」数的缝，两边必须一致，否则末行压不到底。
+    var lineSpacingExtra: CGFloat = 0
+
     /// 版心宽（纸上正文那一块的宽，已经让开左右边距）。硬换行的落点按它算，
     /// 必须和 `ReaderBlock.height` 量的是同一个数——两边各算各的，页尾就溢出。
     let contentWidth: CGFloat
@@ -125,6 +131,14 @@ struct ReaderPageBody: View {
 
         let heading = runs.first?.kind == .heading
 
+        // 基础行距 + 这一页的垂直对齐拉伸。段前白 `gap` 里含一个 `lineSpacing`，
+        // 所以把抬过的 `spacing` 一起喂给它，段前白那条缝也跟着多抬 `lineSpacingExtra`
+        // ——分页摊余量时按「块内行距缝 + 段前白缝」一起数的，这里少抬一条末行就压不到底。
+        let spacing = ReaderTypography.lineSpacing(
+            size: bodySize,
+            scale: lineScale
+        ) + lineSpacingExtra
+
         Text(
             ReaderBlock.attributedString(
                 runs: runs,
@@ -133,9 +147,7 @@ struct ReaderPageBody: View {
                 color: color(for:)
             )
         )
-            .lineSpacing(
-                ReaderTypography.lineSpacing(size: bodySize, scale: lineScale)
-            )
+            .lineSpacing(spacing)
             .multilineTextAlignment(
                 heading ? .center : .leading
             )
@@ -154,10 +166,7 @@ struct ReaderPageBody: View {
                     firstOnPage: firstOnPage,
                     sentences: sentences,
                     size: bodySize,
-                    lineSpacing: ReaderTypography.lineSpacing(
-                        size: bodySize,
-                        scale: lineScale
-                    )
+                    lineSpacing: spacing
                 )
             )
     }
@@ -192,9 +201,10 @@ enum ReaderPageBox {
         ChapterRunningHead.totalHeight
     }
 
-    /// 正文底 → 屏幕底：home 指示条那一段。
+    /// 正文底 → 屏幕底：页码那一行 + home 指示条那一段。
+    /// 顶上那段是 `textTop`（页眉行 + 灵动岛），这里和它同构。
     static var textBottom: CGFloat {
-        ChromeInsets.bottom
+        PageNumberBar.reservedHeight
     }
 
     /// `size` 是 `readerContent` 那个 GeometryReader 的整屏尺寸（外层已经
@@ -229,6 +239,10 @@ struct ReaderPageView: View {
     let bodySize: CGFloat
 
     let lineScale: Double
+
+    /// 垂直对齐那一档行距拉伸，透传给 `ReaderPageBody`。分页时按这一页的余量算出来
+    /// （`PageLayout.pageStretch`），章末页和探针基线口径是 0。
+    var lineSpacingExtra: CGFloat = 0
 
     let theme: ReaderTheme
 
@@ -275,6 +289,7 @@ struct ReaderPageView: View {
                     slices: slices,
                     bodySize: bodySize,
                     lineScale: lineScale,
+                    lineSpacingExtra: lineSpacingExtra,
                     contentWidth: paper.size.width - ReaderTypography.horizontalMargin * 2,
                     theme: theme,
                     chapterTitle: chapterTitle,

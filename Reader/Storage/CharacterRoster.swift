@@ -68,7 +68,18 @@ final class CharacterRoster: @unchecked Sendable {
     /// （``VoiceManager/voiceForCharacter(name:gender:)`` 的 `.unknown` 分支）。这一条改
     /// **谁落到哪把嗓**，而 `voiceID` 是存进档案的：留着旧档案，那些人会继续带着 Ryan 出门，
     /// 书里就还是「旁白中间换人」。旧档案整份作废重扫。
-    static let scheme = 9
+    ///
+    /// 10：前缀残渣并档改成**双向、按出场次数定方向**（``prefixFolds``），并且提到**入档之前**
+    /// 执行（``merge`` 里先攒账再折，折完才过闸门）；折出来的那张表**存进档案**（`folds`，
+    /// 每一轮 merge 都刷新），标注落库前先按它、再按 ``renamePool(bookID:)`` 改一次名
+    /// （见 ``FastChapterAnalyzer``）。
+    /// 旧口径只会往一个方向折（短的并到长的，治「林景／林景默」），而绍宋实测量大的一类是反过来的：
+    /// 真名短、被提示语吃出来的那截长
+    /// ——「韩世忠」180 次 vs「韩世忠骤」1 次、「赵玖」450 次 vs「赵玖恍然」6 次、
+    /// 「刘子羽」97 次 vs「刘子羽严」2 次。这些残渣串各占一条候选、各攒自己那两三次「说过话」，
+    /// 于是**真名反倒过不了入档闸门**（说≥2 且被称呼过≥1），整句退回旁白嗓——档案里 26 人、
+    /// 台词只有 12.3% 落到固定嗓，差的就是这一类。折到真名上以后入档名单会变，旧档案作废重扫。
+    static let scheme = 10
 
     struct Person: Codable, Hashable {
         let name: String
@@ -103,6 +114,14 @@ final class CharacterRoster: @unchecked Sendable {
         /// 同姓里赵玖的出场是第二名的 9 倍），而这些数字在头几批 7 章里根本还不存在。
         /// 档案扫完就不许再动（``merge`` 在 `complete` 时早退），所以这个决定必须跟着档案落盘。
         var aliases: [String: String]
+        /// 前缀残渣 → 那一截真名（``prefixFolds`` 按全书出场次数算出来的）。
+        ///
+        /// 和 `aliases` 分开存，因为它要折的目标**不必已经在档案里**——恰恰相反：残渣把真名那几笔
+        /// 「说过话」抢走了，真名因此过不了入档闸门（绍宋实测「韩世忠」说1 呼46 出180，而
+        /// 「韩世忠骤」「韩世忠微」这类各占一条候选）。只在 `complete` 那一次算的话，整本书扫完之前
+        /// 标注都还在往残渣串上存名字，那个人的台词便一直退回旁白嗓。所以每一轮 `merge` 都刷新这张表，
+        /// 标注落库前先按它改一次名（见 ``fold(_:folds:)``）。
+        var folds: [String: String]
         /// 扫过的段落里「带引号」与「引号不成对」的累计数，用来定这本书能不能段内承前
         /// （见 ``CharacterAnalysis/carriedSpeaker(at:texts:paragraphStarts:knownNames:rosterName:enabled:)``）。
         ///
@@ -142,6 +161,7 @@ final class CharacterRoster: @unchecked Sendable {
         var byName: [String: Person]
         var namesByLength: [String]
         var aliases: [String: String]
+        var folds: [String: String]
     }
 
     private let lock = NSLock()
@@ -196,9 +216,65 @@ final class CharacterRoster: @unchecked Sendable {
         Set(snapshot(bookID: bookID).snapshot?.people.map(\.name) ?? [])
     }
 
+    /// 给「改名字」用的池子：档案里的人，加上账本里证据够密、却还没过入档闸门的那些名字。
+    ///
+    /// 为什么和 ``names`` 分成两个池子：放宽猜人那一条（``DialogueAttribution/poolName``）靠的
+    /// 正是档案两道闸门的信誉，一个都不许少；而这一条**不猜人**，只把已经认出来的串往池子里
+    /// 那一截真名上折（「韩世忠骤」→「韩世忠」），所以可以放到还没入档的人身上。不放行会怎样：
+    /// 一本书刚开头那几章，「韩世忠」的第一笔「说过话」还没落账，句子上却已经挂着残渣串——
+    /// 那正是被看成「把一个单词解析成人物」的地方。
+    ///
+    /// 三道闸门，缺一条就不进池子：
+    /// - `addressed ≥ 1`：在「看见/听到/叫 + 名字」那个宾语位置出现过。残渣（「方才」「低头」
+    ///   「淡然」）永远不会站在那个位置，而每个真名早晚会——这是入档那条句法闸门，原样搬过来。
+    /// - `mentions ≥ minFragmentMentions`：字面在叙述里出现过 20 次以上。一条只出现两三次的串
+    ///   还没有资格当别人的名字。
+    /// - 自己**不是**别人（池内另一条）的前缀：「完颜」是完颜兀术、完颜挞懒的公共姓头，
+    ///   「赵玖一」是「赵玖一时」的半截。拿这种当折名目标，等于把一个人折进另一个残渣里。
+    ///
+    /// 已经被账本折走的串不做目标（它自己就是残渣）。
+    func renamePool(bookID: UUID) -> Set<String> {
+        let loaded = snapshot(bookID: bookID)
+        var strong = Set((loaded.snapshot?.people ?? []).map(\.name))
+        for tally in loaded.snapshot?.tallies ?? [] {
+            guard tally.addressed >= 1, tally.mentions >= Self.minFragmentMentions,
+                  loaded.folds[tally.name] == nil else { continue }
+            strong.insert(tally.name)
+        }
+        // 按首字分桶再比：互为前缀必然同首字，池子一百来条，整池两两比是白付一万次。
+        var heads: [String.Element: [String]] = [:]
+        for name in strong { heads[name.first!, default: []].append(name) }
+        var pool: Set<String> = []
+        for names in heads.values {
+            for name in names {
+                if names.contains(where: { $0 != name && $0.hasPrefix(name) }) { continue }
+                pool.insert(name)
+            }
+        }
+        return pool
+    }
+
+    /// 账本折了哪些串（残渣 → 真名）。标注每章取一次，别每句查一遍（`snapshot` 要过锁）。
+    func foldMap(bookID: UUID) -> [String: String] {
+        snapshot(bookID: bookID).folds
+    }
+
+    /// 按账本折一次名：认出来的串若是某一截真名的前缀残渣，就换成那一截真名。
+    ///
+    /// 只改名、不猜人——查不到映射就原样返回，所以这条不会把句子里没有的名字安到句子上。
+    /// 标注落库前为什么要折：证据是按**字面串**累计的，「韩世忠骤」存着不改，「韩世忠」就永远
+    /// 差那一两笔「说过话」而过不了入档闸门，台词整句退回旁白嗓。
+    /// 查表和入档归并同一套口径（``prefixFolds``），两边各判一次的话，标注认为并到了真名、
+    /// 查声却查不到，那个人就两句换个嗓。
+    static func fold(_ name: String, folds: [String: String]) -> String {
+        folds[DialogueAttribution.canonicalName(name)] ?? name
+    }
+
     func person(bookID: UUID, name: String) -> Person? {
         let loaded = snapshot(bookID: bookID)
-        let canonical = DialogueAttribution.canonicalName(name)
+        // 账本判过的前缀残渣先折回来：这一跳比下面那次「盲目前缀」可信（它有整本书的出场次数
+        // 当证据），而折过去的目标这时可能还没入档——正是残渣抢走了真名那几笔「说过话」。
+        let canonical = Self.fold(DialogueAttribution.canonicalName(name), folds: loaded.folds)
         // 别名排在最前面：并过档的那个人（赵官家）在档案里仍留着自己那一条，先查它的话
         // 「同一个人两把嗓」就原样留在听感里——而这条正是并档要治的。
         if let target = loaded.aliases[canonical], let hit = loaded.byName[target] { return hit }
@@ -236,16 +312,19 @@ final class CharacterRoster: @unchecked Sendable {
     ) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        var loaded = cache[bookID] ?? Loaded(snapshot: nil, byName: [:], namesByLength: [], aliases: [:])
+        var loaded = cache[bookID]
+            ?? Loaded(snapshot: nil, byName: [:], namesByLength: [], aliases: [:], folds: [:])
         if loaded.snapshot == nil { loaded.snapshot = read(bookID: bookID) }
         var written = loaded.snapshot
             ?? Snapshot(scheme: Self.scheme, scannedChapters: 0, complete: false,
-                        people: [], tallies: [], aliases: [:], quoteUnbalanced: 0, quoteTotal: 0, quoteClean: nil)
+                        people: [], tallies: [], aliases: [:], folds: [:],
+                        quoteUnbalanced: 0, quoteTotal: 0, quoteClean: nil)
         // 旧口径的档案整份作废：它上面那些人的性别是按老规则判的，留着就混口径。
         if written.scheme != Self.scheme {
             written = Snapshot(
                 scheme: Self.scheme, scannedChapters: 0, complete: false,
-                people: [], tallies: [], aliases: [:], quoteUnbalanced: 0, quoteTotal: 0, quoteClean: nil
+                people: [], tallies: [], aliases: [:], folds: [:],
+                quoteUnbalanced: 0, quoteTotal: 0, quoteClean: nil
             )
         }
         guard !written.complete else { return false }
@@ -263,16 +342,41 @@ final class CharacterRoster: @unchecked Sendable {
             tally.femaleVotes += person.femaleVotes
             tally.mentions += person.mentions
             tallies[person.name] = tally
+        }
 
-            if let existing = byName[person.name] {
+        // 先把整轮的账攒完，再折残渣、再过闸门。顺序不能反：一轮里「赵玖」和「赵玖恍然」
+        // 是同批进来的，一边攒一边入档的话，谁先被处理决定谁拿到证据，同一本书两次扫出两份名单。
+        let folds = Self.prefixFolds(
+            Dictionary(tallies.values.map { ($0.name, $0.mentions) }, uniquingKeysWith: { $1 })
+        )
+        // 这张表要落盘：标注每章标一次名字，靠的就是它把「韩世忠骤」存成「韩世忠」，
+        // 好让下一轮扫描时这一笔「说过话」记到真名头上。不落盘的折法只在入档那次生效，
+        // 而入档之前那些句子已经全按残渣串存着了——真名反倒一直攒不够证据。
+        written.folds = folds
+        // 折过来的只有「说过几次话」「被称呼过几次」这两笔**事件数**：一句提示语只产出一个串，
+        // 两句就是两句。出场次数和性别票**不加**——数真名那一次子串扫描本来就把残渣那几处
+        // 算进去了（每一处「赵玖恍然」里都有一次「赵玖」），再加一遍等于同一处投两票。
+        var evidence: [String: Tally] = [:]
+        for (name, tally) in tallies where folds[name] == nil {
+            var total = tally
+            for (fragment, base) in folds where base == name {
+                guard let extra = tallies[fragment] else { continue }
+                total.speaks += extra.speaks
+                total.addressed += extra.addressed
+            }
+            evidence[name] = total
+        }
+
+        for (name, tally) in evidence.sorted(by: { $0.key < $1.key }) {
+            if let existing = byName[name] {
                 // 钉过性别的人不改口；还没钉的用**累计**票再判一次，攒够 2 票才钉。
                 guard existing.gender == .unknown else { continue }
                 let judged = CharacterAnalysis.gender(male: tally.maleVotes, female: tally.femaleVotes)
                 guard judged != .unknown else { continue }
-                byName[person.name] = Person(
-                    name: person.name,
+                byName[name] = Person(
+                    name: name,
                     gender: judged,
-                    voiceID: VoiceManager.voiceForCharacter(name: person.name, gender: judged),
+                    voiceID: VoiceManager.voiceForCharacter(name: name, gender: judged),
                     maleVotes: tally.maleVotes,
                     femaleVotes: tally.femaleVotes,
                     mentions: tally.mentions
@@ -286,14 +390,14 @@ final class CharacterRoster: @unchecked Sendable {
             // 例外：**字面里带性别称谓**的人说过一次话就收（绍宋实测，女角几乎不会被写成
             // 「郑太后道：“…”」这种形状，两道闸门一起把书里所有女人拦在档案之外，
             // 那几句落到她们身上的台词便全压在男嗓上）。称谓是闭口集合，「她是谁」写在字面上。
-            let titled = CharacterAnalysis.hasGenderTitle(person.name)
+            let titled = CharacterAnalysis.hasGenderTitle(name)
             guard tally.speaks >= (titled ? 1 : CharacterAnalysis.minSpeakerAttestations),
                   titled || tally.addressed >= 1 else { continue }
             let judged = CharacterAnalysis.gender(male: tally.maleVotes, female: tally.femaleVotes)
-            byName[person.name] = Person(
-                name: person.name,
+            byName[name] = Person(
+                name: name,
                 gender: judged,
-                voiceID: VoiceManager.voiceForCharacter(name: person.name, gender: judged),
+                voiceID: VoiceManager.voiceForCharacter(name: name, gender: judged),
                 maleVotes: tally.maleVotes,
                 femaleVotes: tally.femaleVotes,
                 mentions: tally.mentions
@@ -307,7 +411,13 @@ final class CharacterRoster: @unchecked Sendable {
         // 的漂移分支认出来退回重录，不需要在这里额外做什么。
         if complete {
             var aliases = soleRoleAliases(byName: byName, tallies: tallies)
-            for (fragment, person) in fragmentAliases(byName: byName) where aliases[fragment] == nil {
+            // 残渣并档在 ``merge`` 入档之前就已经折过一遍了；这里对**档案里的人**再判一次，
+            // 补的是账本截断（``maxTallies``）之后看不到的那一对——同一个函数、同一套闸门，
+            // 只是证据池换成档案本身。
+            let rosterMentions = Dictionary(
+                uniqueKeysWithValues: byName.values.map { ($0.name, $0.mentions) }
+            )
+            for (fragment, person) in Self.prefixFolds(rosterMentions) where aliases[fragment] == nil {
                 aliases[fragment] = person
             }
             written.aliases = aliases
@@ -357,7 +467,8 @@ final class CharacterRoster: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if let loaded = cache[bookID] { return loaded }
-        var loaded = Loaded(snapshot: read(bookID: bookID), byName: [:], namesByLength: [], aliases: [:])
+        var loaded = Loaded(snapshot: read(bookID: bookID), byName: [:], namesByLength: [], aliases: [:],
+                            folds: [:])
         if let written = loaded.snapshot { index(&loaded, snapshot: written) }
         cache[bookID] = loaded
         return loaded
@@ -369,6 +480,7 @@ final class CharacterRoster: @unchecked Sendable {
         loaded.byName = Dictionary(snapshot.people.map { ($0.name, $0) }, uniquingKeysWith: { $1 })
         loaded.namesByLength = snapshot.people.map(\.name).sorted { $0.count > $1.count }
         loaded.aliases = snapshot.aliases
+        loaded.folds = snapshot.folds
     }
 
     /// 一个「姓 + 独指称呼」要并到同姓那个人身上，得同时满足四条，缺一条就不并（宁缺不错）：
@@ -414,52 +526,71 @@ final class CharacterRoster: @unchecked Sendable {
         return aliases
     }
 
-    /// **前缀残渣**并档：档案里「短的那截」如果几乎只是「长的那截」被提示语吃掉一个字留下的
-    /// 碎片，它就不是另一个人。
+    /// **互为前缀的两串并成一个人**，方向由**出场次数**定，两个方向都判：
     ///
-    /// 实测的病灶（绍宋 437 章）：书里只有「林景默」这一个近臣，而档案里同时站着「林景」（被认作
-    /// 说话人 11 次）和「林景默」，两条记录两把嗓——同一个人口里的两段对话换了声音，正是需求里
-    /// 禁止的那件事。``DialogueAttribution/canonicalName`` 只能往短的方向折（切状语尾巴），
-    /// 碰上「林景默」这种本身是完整三字名的串就没法知道该并回去，所以这一步只能在**全书证据**上做。
+    /// - 短的那截是残渣（绍宋「林景」183 次里 181 次就是「林景默」，独立只 2 次）→ 并到长的；
+    /// - 长的那截是残渣（「韩世忠」180 次，而「韩世忠骤」1 次；「赵玖」450 次，「赵玖恍然」6 次）
+    ///   → 并到短的。
     ///
-    /// 判据只用档案已有的两个 `mentions`（在遮掉台词的正文里数子串，长名的每一次都含一次短名），
-    /// 于是短名**独立**出现的次数 ≈ `short.mentions - long.mentions`：
+    /// 为什么必须有第二条：分句头那一条形状（``DialogueAttribution/leadingNameRun``）会把主语后面
+    /// 第一个字一起吃进来，而状语开头是**开口集合**，提取端列不完表（旧口径试过来路：
+    /// 「开始/低头/淡然/愈发/再度/犹豫/匆匆……」每一本都冒出新词）。真名短、被吃出来的那截长，
+    /// 于是同一张脸在候选里是**好几条**记录、各攒各的「说过几次话」——结果是**真名反倒过不了
+    /// 入档闸门**（说≥2 且被称呼≥1），台词整句退回旁白嗓。绍宋 60 章实测：档案 26 人、
+    /// 台词只有 12.3% 拿到固定嗓，认得出名字却查不到档案嗓的串里一大半是这一类。
     ///
-    /// 1. 长的那截自己得在书里出现过 ``minFragmentMentions`` 次以上——不然它自己才是残渣，
-    ///    该并的方向反过来。
-    /// 2. 短的那截独立出现的次数既 ≤ 长名出现次数的二十分之一，绝对上也不超过
-    ///    ``maxFragmentStandalone`` 次。绍宋：林景 183 − 林景默 181 = 独立 2 次（1.1%），并；
-    ///    而一个真有 5 次单独出场、对面叫 100 次的名字（1/20 刚好压线）会被绝对上限放行、
-    ///    一个单独出场 20 次的绝不并。宁缺不错：多留一把嗓只是听感重复，并错人是把两个真人合成一个。
-    /// 3. 只往出场最多的那截并，且目标自己不再是被并走的人（免得出现 甲→甲乙→甲乙丙 这种一跳
-    ///    查不到的链）。
+    /// 出场次数天生是子串计数（每一处「赵玖恍然」里都有一次「赵玖」），所以两截各自的独立次数
+    /// 就是 `short.mentions - long.mentions` 与 `long.mentions`——哪一截小到不像一个名字，
+    /// 哪一截就是残渣。闸门两个方向共用同一组数（``minFragmentMentions``／
+    /// ``maxFragmentStandalone``／ ``fragmentDominance``），宁缺不错：多留一把嗓只是听感重复，
+    /// 并错人是把两个真人合成一个。
     ///
-    /// 失败模式写在这里：一本书里真有两个人，一个的名字恰好是另一个的前缀，而短的那个又几乎不
-    /// 单独出现——那种书会把两人并成一把嗓。所以闸门比独指称呼那条紧一个量级（1/20 再卡绝对上限），
-    /// 默认动作是不并，探针把每一条实际发生的并档连出场数一起打出来逐条人眼看。
-    private func fragmentAliases(byName: [String: Person]) -> [String: String] {
-        var aliases: [String: String] = [:]
-        // 长名先判：短的那截要并的目标此刻已经知道自己有没有被并走。
-        let order = byName.keys.sorted { lhs, rhs in
-            lhs.count != rhs.count ? lhs.count > rhs.count : lhs < rhs
+    /// 只在互为前缀时判，而互为前缀必然同首字，所以按首字分桶比（账本最多 ``maxTallies`` 条，
+    /// 整池两两比是 36 万次）。目标自己也被并走的那一跳不并（免得出现 甲→甲乙→甲乙丙，
+    /// 查声一跳查不到）。同一片证据里对同一个残渣有多个合格目标时，取出场最多的那个，
+    /// 再并列取字面小的——结果不许依赖字典遍历顺序。
+    private static func prefixFolds(_ mentions: [String: Int]) -> [String: String] {
+        var buckets: [String.Element: [String]] = [:]
+        for name in mentions.keys {
+            buckets[name.first!, default: []].append(name)
         }
-        for short in order {
-            guard let source = byName[short] else { continue }
-            let longer: [Person] = byName.values.filter { other in
-                other.name.count > short.count && other.name.hasPrefix(short)
+
+        var best: [String: (target: String, mentions: Int)] = [:]
+        func offer(_ fragment: String, _ target: String) {
+            let strength = mentions[target] ?? 0
+            if let current = best[fragment],
+               current.mentions > strength
+                || (current.mentions == strength && current.target <= target) {
+                return
             }
-            let ranked = longer.sorted { lhs, rhs in
-                if lhs.mentions != rhs.mentions { return lhs.mentions > rhs.mentions }
-                return lhs.name < rhs.name
-            }
-            guard let top = ranked.first, aliases[top.name] == nil else { continue }
-            guard top.mentions >= Self.minFragmentMentions else { continue }
-            let standalone = max(0, source.mentions - top.mentions)
-            guard standalone <= Self.maxFragmentStandalone,
-                  Self.fragmentDominance * standalone <= top.mentions else { continue }
-            aliases[short] = top.name
+            best[fragment] = (target, strength)
         }
-        return aliases
+
+        for names in buckets.values {
+            for short in names {
+                let shortMentions = mentions[short] ?? 0
+                for long in names where long.count > short.count && long.hasPrefix(short) {
+                    let longMentions = mentions[long] ?? 0
+                    // 短的那截**独立**出现了几次：出场是子串计数，减一下就是它的残渣度。
+                    let standalone = max(0, shortMentions - longMentions)
+                    if longMentions >= minFragmentMentions,
+                       standalone <= maxFragmentStandalone,
+                       fragmentDominance * standalone <= longMentions {
+                        offer(short, long)
+                    } else if shortMentions >= minFragmentMentions,
+                              longMentions <= maxFragmentStandalone,
+                              fragmentDominance * longMentions <= shortMentions {
+                        offer(long, short)
+                    }
+                }
+            }
+        }
+
+        var folds: [String: String] = [:]
+        for (fragment, hit) in best where best[hit.target] == nil {
+            folds[fragment] = hit.target
+        }
+        return folds
     }
 
     /// 称呼被当面叫过的最少次数。低于这个数就说明它更可能是个巧合的字面尾巴，不是一个真称呼。
@@ -468,10 +599,10 @@ final class CharacterRoster: @unchecked Sendable {
     private static let aliasDominance = 3
     /// 长的那截至少要自己出现过这么多次，才有资格当被并过去的目标。
     private static let minFragmentMentions = 20
-    /// 短名独立出现次数与长名出现次数的比例上限（1/20）。见 ``fragmentAliases`` 第 2 条。
+    /// 短名独立出现次数与长名出现次数的比例上限（1/20）。见 ``prefixFolds`` 第 2 条。
     private static let fragmentDominance = 20
     /// 短名独立出现次数的绝对上限。比例之外还卡这一条，是因为「独立出现过二三十次」的串
-    /// 在书里就是被当名字在用，那不是残渣。见 ``fragmentAliases`` 第 2 条。
+    /// 在书里就是被当名字在用，那不是残渣。见 ``prefixFolds`` 第 2 条。
     private static let maxFragmentStandalone = 10
 
     private func url(bookID: UUID) -> URL {

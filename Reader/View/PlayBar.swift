@@ -88,6 +88,76 @@ struct ChapterRunningHead: View {
     }
 }
 
+/// 纸底那一行的页码「12 / 34」。每页都在，和 `ChapterRunningHead` 同构。
+///
+/// 为什么也要正文让出地方：它以前是浮在正文上的（`10 + ChromeInsets.bottom` 的下边距），
+/// 纸上末行的墨和它的墨顶实测差 0pt，而顶上页眉到首行留着 29.6pt——一页上下两口气
+/// 差这么多，看着就是字快压到页码上了。占成和页眉一样高的一行、上下都留 `verticalMargin`，
+/// 两个距离才由构造相等，而不是靠手调一个魔数凑出来。
+/// 代价：正文少一行多一点的高（30pt ≈ 一页 1 行），页码因此是「本章第几页」而不是行数。
+struct PageNumberBar: View {
+
+    /// 和页眉同一档行高：上下那口气才同一个数。
+    static let contentHeight = ChapterRunningHead.contentHeight
+
+    /// 正文底 → 屏幕底要扣掉的整段（这一行 + home 指示条）。
+    /// 分页量和纸上渲染都取它，见 `ReaderPageBox.textBottom`。
+    static var reservedHeight: CGFloat {
+        ChromeInsets.bottom + contentHeight
+    }
+
+    /// 页码数字在自己那一行里、离行框顶再往下压这么多。
+    ///
+    /// 上下两口气要相等（末行墨→页码墨 == 页眉墨→首行墨 = 29.67pt）。探针实测
+    /// （`.probe/page-text-top-probe.swift` FULL_PAGE）：页码顶到行框上沿（`.top`）时墨顶在
+    /// 791.0pt，而末行压到版心底后墨底在 765.0pt，下口气只有 26.0pt，比上口气短 3.67pt——
+    /// 把页码再往下压这 3.67pt，两口气才等长。这个数在默认字号 19pt 下精确；字号档 0.8~1.5
+    /// 时 CJK 行框上下那段固有空气跟着字号缩放，两口气各自漂 ≤1.4pt，都在探针 1.5pt 容差里，
+    /// 读者也看不出一两 pt 的底边差，所以不把这个 chrome 元素和正文字号耦起来。
+    static let inkTopInset: CGFloat = 3.67
+
+    let text: String
+
+    let color: Color
+
+    var body: some View {
+
+        VStack(spacing: 0) {
+
+            Text(
+                text
+            )
+            .font(
+                .caption
+            )
+            .monospacedDigit()
+            .foregroundStyle(color)
+            .frame(
+                maxWidth: .infinity,
+                alignment: .trailing
+            )
+            .padding(.top, Self.inkTopInset)
+            // 顶到行框上沿，不居中。上下两口气要相等（末行墨→页码墨 == 页眉墨→首行墨），
+            // 但一行 CJK 正文的墨在自己行框里是不对称的：离框顶 2.3pt、离框底 7.4pt
+            // （`.probe/page-text-top-probe.swift` 量）。底部这条又是从「末行墨底」往下量到
+            // 「页码墨顶」，居中会把页码墨顶压得比页眉墨底离版心更远。顶到上沿再按
+            // `inkTopInset` 下沉，把这段结构性差抵成和顶部等长——数由探针实测来定，不拍脑袋。
+            .frame(
+                height: Self.contentHeight,
+                alignment: .top
+            )
+
+            // home 指示条那一段不摆字：页码整行只待在它上面。
+            Color.clear
+                .frame(
+                    height: ChromeInsets.bottom
+                )
+        }
+        .padding(.trailing, 14)
+        .allowsHitTesting(false)
+    }
+}
+
 /// 阅读页唤出来的两条：上方「关闭 · 目录 · Aa」，下方「听」。
 ///
 /// 正文中心完全留给「点哪句从哪句开始朗读」，所以这两条不常驻，

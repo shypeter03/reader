@@ -637,6 +637,7 @@ private extension ReaderView {
                 : [],
             bodySize: sheet.layout.bodySize,
             lineScale: lineScale,
+            lineSpacingExtra: sheet.layout.stretch(forPage: local),
             theme: theme,
             chapterTitle: sheet.chapter.title,
             activePosition: isMain && speechEnabled
@@ -994,17 +995,12 @@ private extension ReaderView {
 
     var pageIndicator: some View {
 
-        Text(
-            "\(min(currentPage + 1, layout.pageCount)) / \(layout.pageCount)"
+        // 落点不给在这儿调：这一行的高就是 `ReaderPageBox.textBottom` 扣出来的那一段，
+        // 两边都取 `PageNumberBar`，改了行高分页和纸面跟着一起动。
+        PageNumberBar(
+            text: "\(min(currentPage + 1, layout.pageCount)) / \(layout.pageCount)",
+            color: theme.text.opacity(0.35)
         )
-        .font(
-            .caption
-        )
-        .monospacedDigit()
-        .foregroundStyle(theme.text.opacity(0.35))
-        .padding(.trailing, 14)
-        .padding(.bottom, 10 + ChromeInsets.bottom)
-        .allowsHitTesting(false)
     }
 
     /// 分页输入。角色名**不在**里面：纸上不显示说话人，名字只给语音用，

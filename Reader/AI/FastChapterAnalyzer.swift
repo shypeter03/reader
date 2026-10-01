@@ -16,6 +16,10 @@ actor FastChapterAnalyzer {
     private struct Scope {
         let bookID: UUID
         let knownNames: Set<String>
+        /// 改名字用的池子（档案 + 账本里证据够密的那些），外加账本判过的前缀对。
+        /// 每章取一次，别每句查一遍档案（`snapshot` 要过锁）。
+        let renamePool: Set<String>
+        let folds: [String: String]
         /// 这本书引号配对干净、允许段内承前（见 ``CharacterRoster/allowsParagraphCarry``）。
         let carry: Bool
         let texts: [String]
@@ -26,10 +30,23 @@ actor FastChapterAnalyzer {
         Scope(
             bookID: bookID,
             knownNames: CharacterRoster.shared.names(bookID: bookID),
+            renamePool: CharacterRoster.shared.renamePool(bookID: bookID),
+            folds: CharacterRoster.shared.foldMap(bookID: bookID),
             carry: CharacterRoster.shared.allowsParagraphCarry(bookID: bookID),
             texts: chapter.sentences.map(\.text),
             paragraphStarts: chapter.sentences.map(\.startsParagraph)
         )
+    }
+
+    /// 落库之前把「韩世忠骤」这种前缀残渣换成真名。
+    ///
+    /// 两步同一条口径：先查账本判过的前缀对（``CharacterRoster/fold(_:folds:)``，两边都有整本书
+    /// 的出场次数当证据），再退一步按池子折（``DialogueAttribution/folded(name:pool:)``，池子里
+    /// 包含还没入档的那个人）。认不出人、只认出一截串的句子一律不动——这条只改写法，不猜谁。
+    private func foldedName(_ name: String?, scope: Scope) -> String? {
+        guard let name else { return nil }
+        let folded = CharacterRoster.fold(name, folds: scope.folds)
+        return DialogueAttribution.folded(name: folded, pool: scope.renamePool) ?? folded
     }
 
     // MARK: - Analyze
@@ -113,9 +130,9 @@ actor FastChapterAnalyzer {
                 enabled: scope.carry
             )
         }
-        updated.characterName = characterName
+        updated.characterName = foldedName(characterName, scope: scope)
 
-        if analysis.speaker == .character, let characterName {
+        if analysis.speaker == .character, let characterName = updated.characterName {
 
             if let character = chapter.characters.first(where: { $0.name == characterName }) {
                 updated.characterID = character.id
@@ -151,13 +168,16 @@ actor FastChapterAnalyzer {
             let (type, direct) = speakerOnly(sentence.text, knownNames: scope.knownNames)
             // 迁移也要走承前：否则「已存章节按老口径重标」这一遍会把新规则借到的名字漏掉，
             // 同一句话在迁移前后落到两把嗓上，正是「一个人两段对话换个声音」。
-            let name = direct ?? CharacterAnalysis.carriedSpeaker(
-                at: index,
-                texts: scope.texts,
-                paragraphStarts: scope.paragraphStarts,
-                knownNames: scope.knownNames,
-                rosterName: { CharacterRoster.shared.person(bookID: scope.bookID, name: $0)?.name },
-                enabled: type == .dialogue && scope.carry
+            let name = foldedName(
+                direct ?? CharacterAnalysis.carriedSpeaker(
+                    at: index,
+                    texts: scope.texts,
+                    paragraphStarts: scope.paragraphStarts,
+                    knownNames: scope.knownNames,
+                    rosterName: { CharacterRoster.shared.person(bookID: scope.bookID, name: $0)?.name },
+                    enabled: type == .dialogue && scope.carry
+                ),
+                scope: scope
             )
             sentence.type = type
             sentence.speaker = type == .dialogue ? .character : .narrator

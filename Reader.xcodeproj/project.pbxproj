@@ -19,7 +19,11 @@
 		5222141E303EE5820022E4E3 /* Sentence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222141D303EE5820022E4E3 /* Sentence.swift */; };
 		52221420303EE5930022E4E3 /* Chapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222141F303EE5930022E4E3 /* Chapter.swift */; };
 		52221422303EE5AA0022E4E3 /* Book.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221421303EE5AA0022E4E3 /* Book.swift */; };
-		52AA000030AA000000000A02 /* PageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000A01 /* PageLayout.swift */; };
+		52AA000030AA000000002012 /* ReaderTypography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002011 /* ReaderTypography.swift */; };
+		52AA000030AA000000002022 /* ReaderBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002021 /* ReaderBlock.swift */; };
+		52AA000030AA000000002032 /* PageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002031 /* PageLayout.swift */; };
+		52AA000030AA000000002042 /* ReaderPageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002041 /* ReaderPageText.swift */; };
+		52AA000030AA000000002052 /* ReaderTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002051 /* ReaderTheme.swift */; };
 		52AA000030AA000000000D02 /* AppLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000000D01 /* AppLog.swift */; };
 		52221425303EE6040022E4E3 /* BookParing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221424303EE6040022E4E3 /* BookParing.swift */; };
 		5222142A303EE66A0022E4E3 /* AIAnalysis.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221429303EE66A0022E4E3 /* AIAnalysis.swift */; };
@@ -139,7 +143,11 @@
 		5222141D303EE5820022E4E3 /* Sentence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sentence.swift; sourceTree = "<group>"; };
 		5222141F303EE5930022E4E3 /* Chapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chapter.swift; sourceTree = "<group>"; };
 		52221421303EE5AA0022E4E3 /* Book.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Book.swift; sourceTree = "<group>"; };
-		52AA000030AA000000000A01 /* PageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageLayout.swift; sourceTree = "<group>"; };
+		52AA000030AA000000002011 /* ReaderTypography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderTypography.swift; sourceTree = "<group>"; };
+		52AA000030AA000000002021 /* ReaderBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderBlock.swift; sourceTree = "<group>"; };
+		52AA000030AA000000002031 /* PageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageLayout.swift; sourceTree = "<group>"; };
+		52AA000030AA000000002041 /* ReaderPageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPageText.swift; sourceTree = "<group>"; };
+		52AA000030AA000000002051 /* ReaderTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderTheme.swift; sourceTree = "<group>"; };
 		52AA000030AA000000000D01 /* AppLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLog.swift; sourceTree = "<group>"; };
 		52221424303EE6040022E4E3 /* BookParing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookParing.swift; sourceTree = "<group>"; };
 		52221429303EE66A0022E4E3 /* AIAnalysis.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAnalysis.swift; sourceTree = "<group>"; };
@@ -287,6 +295,8 @@
 				52C1DB103080000000000010 /* Qwen3TTS */,
 				52221428303EE65E0022E4E3 /* AI */,
 				52221423303EE5ED0022E4E3 /* Parsing */,
+				52AA000030AA000000002001 /* Engine */,
+				52AA000030AA000000002002 /* Render */,
 				52221418303EE5320022E4E3 /* Models */,
 				522213E5303EE4160022E4E3 /* ReaderApp.swift */,
 				52FA1B0030BB000000000001 /* Info.plist */,
@@ -322,6 +332,25 @@
 			path = ReaderUITests;
 			sourceTree = "<group>";
 		};
+		52AA000030AA000000002001 /* Engine */ = {
+			isa = PBXGroup;
+			children = (
+				52AA000030AA000000002011 /* ReaderTypography.swift */,
+				52AA000030AA000000002021 /* ReaderBlock.swift */,
+				52AA000030AA000000002031 /* PageLayout.swift */,
+			);
+			path = Engine;
+			sourceTree = "<group>";
+		};
+		52AA000030AA000000002002 /* Render */ = {
+			isa = PBXGroup;
+			children = (
+				52AA000030AA000000002041 /* ReaderPageText.swift */,
+				52AA000030AA000000002051 /* ReaderTheme.swift */,
+			);
+			path = Render;
+			sourceTree = "<group>";
+		};
 		52221418303EE5320022E4E3 /* Models */ = {
 			isa = PBXGroup;
 			children = (
@@ -333,7 +362,6 @@
 				52221433303EE6E40022E4E3 /* AudioSegment.swift */,
 				5222145D303EF7C10022E4E3 /* EPUBBook.swift */,
 				5222145F303EF7D10022E4E3 /* ChapterDescriptor.swift */,
-				52AA000030AA000000000A01 /* PageLayout.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -671,7 +699,11 @@
 				5222141E303EE5820022E4E3 /* Sentence.swift in Sources */,
 				52221422303EE5AA0022E4E3 /* Book.swift in Sources */,
 				5222145E303EF7C10022E4E3 /* EPUBBook.swift in Sources */,
-				52AA000030AA000000000A02 /* PageLayout.swift in Sources */,
+				52AA000030AA000000002012 /* ReaderTypography.swift in Sources */,
+				52AA000030AA000000002022 /* ReaderBlock.swift in Sources */,
+				52AA000030AA000000002032 /* PageLayout.swift in Sources */,
+				52AA000030AA000000002042 /* ReaderPageText.swift in Sources */,
+				52AA000030AA000000002052 /* ReaderTheme.swift in Sources */,
 				52AA000030AA000000000D02 /* AppLog.swift in Sources */,
 				525CEC9E303FA9FC00260A94 /* AIError.swift in Sources */,
 				52221462303F03B90022E4E3 /* MLXQwenService.swift in Sources */,

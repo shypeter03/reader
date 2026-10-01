@@ -1,75 +1,19 @@
 //
-//  PageLayout.swift
+//  ReaderBlock.swift
 //  Reader
 //
-//  书本式分页：同段句子并成一块，按块量高，再按页的可用高度贪心装页。
+//  排版内核之二：断行、两端对齐补齐、量高、分块。
+//
+//  这里唯一的平台依赖是测量：`penPositions` 和 `lineRects` 都走 TextKit1 的
+//  `NSLayoutManager`。这不是随手选的——断点必须和落纸的排版器同一个引擎，换成
+//  CoreText 的字形推进就偏 3%，整行崩掉（见 `penPositions` 的说明）。要接第二个端，
+//  替身必须给出同样的行框口径，而不是把这里的数抄走。
+//
+//  渲染侧那两段（SwiftUI 的 `Font` 与 `attributedString`）在
+//  `Reader/Render/ReaderPageText.swift`：内核里不许出现 Color / SwiftUI 的 Font。
 //
 
-import SwiftUI
-
-/// 排版的唯一口径。正文渲染和分页测量必须共用这一组常量——
-/// 两边各写一份的话，量出来 30 行、实际 31 行，字就会溢到下一页去。
-enum ReaderTypography {
-
-    static func bodySize(scale: Double) -> CGFloat {
-        19 * CGFloat(scale)
-    }
-
-    /// 行距。`lineScale` 是用户在 Aa 面板里调的那一档：正文要能自己调疏密，
-    /// 但必须和分页测量共用同一个数，否则量出来 30 行、实际 28 行，字溢到下一页。
-    static func lineSpacing(size: CGFloat, scale: Double = 1.0) -> CGFloat {
-        size * 0.42 * CGFloat(scale)
-    }
-
-    /// 段首缩进的两个全角空格。
-    ///
-    /// 不用「给整块加左内边距」：内边距会把折行的第二行一起推进去，一段三行
-    /// 就成了一段阶梯，而中文书只有首行缩进，折回来的那行要贴版心。
-    /// 全角空格在中文字体里正好一个字宽，所以缩进量跟着字号走；渲染和测量
-    /// 都喂同一个字符串给排版引擎，折行结果自然一致。
-    static let firstLineIndent = "\u{3000}\u{3000}"
-
-    /// 这一句实际排出来长什么样（含段首缩进）。渲染与测量必须都走这里。
-    static func displayText(_ sentence: Sentence, chapterTitle: String) -> String {
-        if isChapterHeading(sentence, chapterTitle: chapterTitle) || !sentence.startsParagraph {
-            return sentence.text
-        }
-        return firstLineIndent + sentence.text
-    }
-
-    /// 正文第一句常常就是章标题本身——EPUB 的 `<h1>` 抽成纯文本后就排在第一段。
-    /// 它要按标题排（居中、不缩进），不能跟着正文走。
-    ///
-    /// 目录标签和正文里的 `<h1>` 常常只差一个「第9章」这样的编号（一边有、一边没有），
-    /// 所以两边都剥掉编号再比。刻意不用「互相包含」：正文第一句里提到书名太常见了，
-    /// 那样会把一整段正文当标题居中。
-    static func isChapterHeading(_ sentence: Sentence, chapterTitle: String) -> Bool {
-        guard sentence.index == 0 else { return false }
-        let title = bareTitle(chapterTitle)
-        return !title.isEmpty && bareTitle(sentence.text) == title
-    }
-
-    /// 去掉空白与开头的「第9章 / 第九回」这类编号，只留标题本身。
-    static func bareTitle(_ text: String) -> String {
-        // 本模块有个「小说角色」叫 Character，这里一律用全名拼字符串
-        let compact = String(text.filter { !$0.isWhitespace })
-        let pattern = "^第[0-9零〇一二三四五六七八九十百千两]{1,8}[章节回卷篇]"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return compact }
-        return regex.stringByReplacingMatches(
-            in: compact,
-            range: NSRange(compact.startIndex..., in: compact),
-            withTemplate: ""
-        )
-    }
-
-    /// 段与段之间**额外**多留的白。原来是每句之间都留 0.8 字，一段读起来是断开的好几条。
-    static func paragraphGap(size: CGFloat) -> CGFloat {
-        size * 0.35
-    }
-
-    static let horizontalMargin: CGFloat = 22
-    static let verticalMargin: CGFloat = 18
-}
+import UIKit
 
 /// 一块 = 同一段里连续句子并起来的渲染单元。分段流动的落地方式：
 /// 一块一个 `Text`，句与句之间不再硬换行。
@@ -97,6 +41,18 @@ enum ReaderBlock {
     private static let noLineTail: Set<Swift.Character> = [
         "（", "《", "「", "『", "【", "“", "‘", "(", "[", "{",
     ]
+
+    /// 两端对齐摊给**每一格**的字距上限，按字宽算。探针断言用的也是这一个数，别处不许另抄。
+    ///
+    /// 为什么是 0.06：满行十七八个缝，每个缝最多动 0.06 字宽，整行最多多摊出约一个字宽——
+    /// 正好吃得掉最常见的洞（禁则挪走「。」一整簇留下的那一格），于是绝大多数行照样顶到
+    /// 右边界；而相邻两行的字间距之差被这个数封死（19pt 字号 ≈1.15pt，21.5pt ≈1.3pt），
+    /// 肉眼分不出「这行密、那行散」。从前给的是 0.26 字宽，模拟器实测（`.probe/justify-probe.swift`
+    /// 改前基线）94 行里 21 行每格补过 1.5pt、最大 7.9pt（30pt 字号那一档），
+    /// 那才是读者说「为了填满整行，字间距被迫明显变化」的出处。
+    ///
+    /// 洞比这个上限大就**不硬拉**：那点余量留在行尾，右边界宁可少一个字。
+    static let justifyGapCap: CGFloat = 0.06
 
     /// 摊平后的一片：同一个 run 里、后面补着同一个宽度的连续字符。
     ///
@@ -127,15 +83,29 @@ enum ReaderBlock {
     /// 「，。）」这类不许顶行首，于是一整簇（「的……」三个字）得整体挪到下一行，
     /// 行尾就空出一截。
     ///
-    /// 洞断不掉（把收尾标点甩在行尾是排版事故），只剩摊平这一条路：书上的中文就是两端对齐的。
+    /// 洞断不掉（把收尾标点甩在行尾是排版事故），只能摊，但**摊不平就让它空着**：
+    /// 读者要的是每一行字间距都一样，不是每一行都顶到右边界。这两件事从前被当成一件，
+    /// 于是补字距的上限给到 0.26 字宽，两格的洞就每个缝张开 5pt 以上——右边界齐了，
+    /// 换来的是「这一行散、那一行密」。现在上限收到 `justifyGapCap`（0.06 字宽），
+    /// 补不平的那点余量留在行尾，宁可行尾少一个字。
     ///
-    /// 三条约束：
+    /// 四条约束：
     /// ① 只补**我们自己断出来的**那些行。段末那一行、章标题那一行一概不补——
     ///    那是天然的短行，拉开就成了字缝能塞进手指的花名册。
-    /// ② 补到 `width - 0.5`，不补满分；补完这一行还要按落纸行回炉验一次（`lineBreaks` 里
+    ///    唯一的例外写在 `Run.endsParagraph`：段落跨页时，页末那一行不是段末，是正文中间的一行，
+    ///    照补。判据只看「这一块的最后一片是不是整段的收尾」，两端都不许各自判一遍。
+    /// ② 顶到 `width - 0.5` 为止，不补满分；补完这一行还要按落纸行回炉验一次（`lineBreaks` 里
     ///    那道「折半重试」的闸）。断点按 `width` 判定，补齐后正好顶满的一行在浮点上没人担保
     ///    还装得下；一旦判成装不下，引擎自己再折，量的与排的就此分家。
-    /// ③ 每格最多补 0.26 字宽。洞再大也不硬拉，拉完那一行像被风吹散。
+    /// ③ 每格最多补 `justifyGapCap` 字宽。洞再大也不硬拉，缺口留在行尾——
+    ///    行尾空半格看得见，字缝里的空气更难看。
+    /// ④ 段的最后一行整行只剩标点时，把上一个断点往前退一格，直到尾行头上是个真字：
+    ///    「……这是一个测试」断在「。」之前（尾行只有「。」）不行，退一格排成
+    ///    「……这是一个测 / 试。」。这一格是从上一行**少排一个字**来的，和 ③ 同一个取向：
+    ///    少一个字，不换字间距。
+    ///
+    /// 普通行的行尾只剩一个字是允许的（③④ 都只动断点，不动字距，也不给一行设字数下限）：
+    /// 一整段排到末尾本来就常常只剩一个字，为了凑满去压前面那些字的间距才是错。
     ///
     /// **先试死的路**（模拟器像素实测，`.probe/justify-probe.swift`）：`.multilineTextAlignment(.justified)`
     /// 确实拉平（段3@21.5 的行尾极差 45.7pt→21.0pt），但它按自己的算法折行，每段比我们的断点多出一行，
@@ -144,7 +114,8 @@ enum ReaderBlock {
     ///
     /// 字宽取排版引擎自己算的推进（`penPositions`，和 `height` 同一个 TextKit），
     /// 不按「汉字=1em」估——标点和数字各有各的宽。断处守三条：收尾标点不顶行首、
-    /// 起始标点不孤行尾、拉丁词和数字不劈开。
+    /// 起始标点不孤行尾、拉丁词和数字不劈开。字距**只放大不缩小**（缺口为负就整行不补），
+    /// 所以「为了多塞一个字而把整行压紧」这件事在这一版里没有任何代码路径。
     static func layout(
         runs: [Run],
         width: CGFloat,
@@ -171,6 +142,7 @@ enum ReaderBlock {
                 runs: runs,
                 body: body,
                 width: width,
+                justifyTail: runs.last.map { $0.kind == .body && !$0.endsParagraph } ?? false,
                 cuts: &cutSet,
                 stretch: &stretch
             )
@@ -214,6 +186,7 @@ enum ReaderBlock {
         runs: [Run],
         body: CGFloat,
         width: CGFloat,
+        justifyTail: Bool,
         cuts: inout Set<Int>,
         stretch: inout [CGFloat]
     ) {
@@ -260,9 +233,55 @@ enum ReaderBlock {
             index += 1
         }
 
+        // 段落还在下一页：这一块的最后一条线不是段末，是正文中间的一行，跟着一起拉平。
+        // 断点正好压在最后一个字上时（`lineStart == letters.count`）已经没这一行了，跳过。
+        if justifyTail, lineStart < letters.count {
+            broken.append((lineStart, letters.count))
+        }
+
+        // ④ 段末那一行不许整行只剩标点。
+        //
+        // 正常中文走不到这里：`canBreak` 不许断在「，。）」这类字之前，所以尾行头上必然跟着
+        // 一个真字（「试。」）。唯一漏得进来的是上面那句兜底——整行没有一个允许断的地方
+        // （超长拉丁词、整串「……」），断点被硬压在 `index` 上，尾行就可能只剩一个标点。
+        // 治法是退一格：上一行少排一个字，尾行带上一个真字。
+        //
+        // 只管段末（`!justifyTail`）：页末那一行不是段的收尾，它的「最后一行」在下一页那一块里，
+        // 那一块走到这里会自己判。
+        //
+        // 退完必须验新尾行在真版心里仍只占一行（`pen` 的推进就是断行用的那把尺）：
+        // 尾行本来快满了、再吞一个字就要折第二行，那等于凭空多一行，页尾就此错位。
+        if !justifyTail,
+           lineStart > 0,
+           lineStart < letters.count,
+           noLineHead.contains(letters[lineStart]),
+           var previous = broken.last,
+           previous.end == lineStart {
+
+            var head = lineStart
+
+            while head > previous.start + 1,
+                  noLineHead.contains(letters[head]),
+                  pen[letters.count] - pen[head - 1] <= width {
+
+                cuts.remove(head)
+                head -= 1
+                cuts.insert(head)
+            }
+
+            if head != lineStart {
+                previous.end = head
+                broken[broken.count - 1] = previous
+            }
+        }
+
         // 把行尾的洞摊进这一行的字距。洞是禁则挪走一整簇留下的，见 `layout` 的说明。
+        //
+        // 上限只给 `justifyGapCap`（0.06 字宽）：洞比「每格 0.06 × 缝数」大就补不平，
+        // 缺口留在行尾。这是刻意的——字间距稳定比右边界齐更值钱，见 ③。
+        // 反向（洞为负、行已经顶满）一概不补，也从不往里压：压缩字距在这版里没有路径。
         let target = width - 0.5
-        let perGapCap = body * 0.26
+        let perGapCap = body * Self.justifyGapCap
 
         for line in broken {
 
@@ -516,6 +535,19 @@ enum ReaderBlock {
         let text: String
 
         let kind: RunKind
+
+        /// 这一个 run 是不是它所在段落的**收尾**（整句都在、下一句另起一段，或本章读完）。
+        ///
+        /// 内核算的是块里最后一个 run，它决定「这一块是不是以段落收尾行结束」。
+        /// 为什么要专门记它：两端对齐只该补「我们自己断出来的行」，段末那一行短得理直气壮，
+        /// 拉开就成了字缝能塞进手指的花名册。可**页末那一行**常常不是段末——后半截在下一页，
+        /// 它就是正文中间的一行，书上是要拉平的。不分这一格，读者看见的就是
+        /// 「一行莫名空了半截，字却在下一页继续」（真书普查：14 章 154 页里 50 处，最大 7 格）。
+        ///
+        /// 默认 `false` = 当成「段落还没收尾」，末行照补：手搓 `Run` 的取证代码量的正是
+        /// 段落跨页时页末那一行（`.probe/justify-probe.swift` A/B 段）；判得出真段末的
+        /// 只有走 `runs(for:...)` 的生产路径。
+        var endsParagraph: Bool = false
     }
 
     /// 一片字 → 块。
@@ -572,7 +604,7 @@ enum ReaderBlock {
         chapterTitle: String
     ) -> [Run] {
 
-        group.map { slice in
+        var runs = group.map { slice in
 
             Run(
                 position: slice.position,
@@ -584,6 +616,44 @@ enum ReaderBlock {
                     ) ? .heading : .body
             )
         }
+
+        guard !runs.isEmpty, let last = group.last else { return runs }
+
+        runs[runs.count - 1].endsParagraph = closesParagraph(
+            last,
+            sentences: sentences,
+            chapterTitle: chapterTitle
+        )
+
+        return runs
+    }
+
+    /// 这一片是不是它所在段落的收尾。
+    ///
+    /// 两条都要成立：这片是那句的**全部**（页尾切下来的前半截不算——后半截还在下一页），
+    /// 且下一句另起一段（或者它已经是本章最后一句）。
+    ///
+    /// 为什么只看句子不看页：分页是「一句一片」，同段的片永远并进同一个块，所以
+    /// 「这一块的最后一片」和「这一段的最后一句」是同一件事的两种说法。装页途中逐句
+    /// 累加时也走这里，那时最后一片多半还在段中——给它末行补字距不会改动行数
+    /// （`lineBreaks` 里那道「折半重试」的闸担保），所以量到的高和纸上排的高不会分家。
+    private static func closesParagraph(
+        _ slice: PageSlice,
+        sentences: [Sentence],
+        chapterTitle: String
+    ) -> Bool {
+
+        guard sentences.indices.contains(slice.position) else { return true }
+
+        guard slice.text == ReaderTypography.displayText(
+            sentences[slice.position],
+            chapterTitle: chapterTitle
+        ) else { return false }
+
+        let next = slice.position + 1
+        guard next < sentences.count else { return true }
+
+        return sentences[next].startsParagraph
     }
 
     /// 字重的唯一出处。UIKit 和 SwiftUI 两边都从这儿换算，别各写一份。
@@ -608,17 +678,6 @@ enum ReaderBlock {
         switch weight(run) {
         case .regular: return .systemFont(ofSize: body)
         case .semibold: return .systemFont(ofSize: body, weight: .semibold)
-        }
-    }
-
-    static func font(
-        _ run: Run,
-        body: CGFloat
-    ) -> Font {
-
-        switch weight(run) {
-        case .regular: return .system(size: body)
-        case .semibold: return .system(size: body, weight: .semibold)
         }
     }
 
@@ -673,17 +732,38 @@ enum ReaderBlock {
         lineSpacing: CGFloat,
         width: CGFloat
     ) -> CGFloat {
-        ceil(
-            lineRects(
-                measureString(
-                    runs: runs,
-                    body: body,
-                    lineSpacing: lineSpacing,
-                    width: width
-                ),
+        metrics(
+            runs: runs,
+            body: body,
+            lineSpacing: lineSpacing,
+            width: width
+        ).height
+    }
+
+    /// 这一块的实测高度**和**行数，一次排版两样都拿到。
+    ///
+    /// 为什么还要行数：分页收尾做垂直对齐（把末行压到版心底）时，摊余量按「行距缝」算，
+    /// 缝数 = 行数 − 1。量高本来就走 `lineRects`，行数顺手一起交出来，别为一个 count 再排
+    /// 一遍——整章几千行，多排一遍就是「点开一章 1s」预算里的大头。`height` 也走这里，
+    /// 那个 `ceil(Σ 行框高)` 的口径因此只写在这一处。
+    static func metrics(
+        runs: [Run],
+        body: CGFloat,
+        lineSpacing: CGFloat,
+        width: CGFloat
+    ) -> (height: CGFloat, lines: Int) {
+        let rows = lineRects(
+            measureString(
+                runs: runs,
+                body: body,
+                lineSpacing: lineSpacing,
                 width: width
-            )
-            .reduce(0) { total, row in total + row.height }
+            ),
+            width: width
+        )
+        return (
+            ceil(rows.reduce(0) { total, row in total + row.height }),
+            rows.count
         )
     }
 
@@ -779,534 +859,4 @@ enum ReaderBlock {
         return string
     }
 
-    /// 渲染用的串。颜色由调用方逐句给（把上色写进测量端只会让「改了字色页就跳」）。
-    ///
-    /// `width` 是版心宽，用来算硬换行的落点——**必须和 `height` 拿到的是同一个数**，
-    /// 否则量的是一版、排的是一版，页尾就溢出了。
-    ///
-    /// 每句一个 `link` run 是给点读定位用的。注意副作用：SwiftUI 不肯在两个 link 域
-    /// 之间断行，所以「一句能不能和上一句挤在同一行」在这里和测量端必须算同一种——
-    /// 测量端靠句界插零宽 U+2060 对齐，见 `height`。
-    ///
-    /// 每句一个 `link` run 是给点读定位用的：并成一块以后「点到哪一句」不再是哪个
-    /// `Text` 被点了，只能靠 run。探针实测：run 上显式给的前景色不会被链接色盖掉，
-    /// 也不会画下划线，所以「当前句上色、其余淡一档」照旧成立。
-    static func attributedString(
-        runs: [Run],
-        body: CGFloat,
-        width: CGFloat,
-        color: (Run) -> Color
-    ) -> AttributedString {
-
-        var result = AttributedString()
-
-        for piece in layout(runs: runs, width: width, body: body) {
-
-            let run = runs[piece.runIndex]
-
-            var part = AttributedString(piece.text)
-
-            part.font = font(run, body: body)
-
-            // 两端对齐摊开的那点字距。`layout` 保证每行补到 `width - 0.5` 就收手，
-            // 所以补完还是装得下，引擎不会再自己折一次。
-            if piece.kern > 0 { part.kern = Double(piece.kern) }
-
-            part[AttributeScopes.SwiftUIAttributes.ForegroundColorAttribute.self] = color(run)
-
-            part.link = URL(string: "reader://sentence/\(run.position)")
-
-            result.append(part)
-        }
-
-        return result
-    }
-}
-
-/// 阅读主题：底色 + 字色。
-///
-/// 颜色刻意**不进**分页测量——它一个像素都不影响行高，进去只会让「改了颜色页就跳」
-/// 这类bug 有藏身地方。要调疏密走 `ReaderTypography.lineSpacing`，那条才参与。
-enum ReaderTheme: String, CaseIterable, Identifiable {
-
-    case paper
-    case cream
-    case sepia
-    case night
-    case system
-
-    static let storageKey = "readerTheme"
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .paper: return "宣纸"
-        case .cream: return "米黄"
-        case .sepia: return "羊皮"
-        case .night: return "夜间"
-        case .system: return "跟随"
-        }
-    }
-
-    /// 底色的两份 RGB：浅色一套、深色一套。固定档两边给同一个值，只有「跟随」真的分家。
-    /// `background`（SwiftUI）和 `uiBackground`（UIKit）都从这里出，
-    /// 免得改了纸色忘了卷页那张纸。
-    private var backgroundRGB: (
-        light: (Double, Double, Double),
-        dark: (Double, Double, Double)
-    ) {
-        switch self {
-        case .paper: return ((0.99, 0.99, 0.98), (0.99, 0.99, 0.98))
-        case .cream: return ((0.96, 0.94, 0.87), (0.96, 0.94, 0.87))
-        case .sepia: return ((0.93, 0.87, 0.76), (0.93, 0.87, 0.76))
-        case .night: return ((0.08, 0.08, 0.10), (0.08, 0.08, 0.10))
-        case .system: return ((0.99, 0.99, 0.98), (0.07, 0.07, 0.09))
-        }
-    }
-
-    var background: Color {
-        Color(uiColor: uiBackground)
-    }
-
-    /// 同一份纸色的 UIColor 版。卷页那层是 UIKit（`UIPageViewController` 和它缓存的
-    /// `UIHostingController.view`），只认 UIColor：喂不进 Color，纸就是白的——
-    /// 深色模式下翻起页来一张亮纸，正是用户报的那个样子。
-    var uiBackground: UIColor {
-        let rgb = backgroundRGB
-        return UIColor { traits in
-            let c = traits.userInterfaceStyle == .dark ? rgb.dark : rgb.light
-            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
-        }
-    }
-
-    var text: Color {
-        switch self {
-        case .paper: return Color(red: 0.13, green: 0.13, blue: 0.14)
-        case .cream: return Color(red: 0.22, green: 0.20, blue: 0.15)
-        case .sepia: return Color(red: 0.29, green: 0.22, blue: 0.13)
-        case .night: return Color(red: 0.80, green: 0.80, blue: 0.83)
-        case .system: return adaptive(
-            light: (0.13, 0.13, 0.14),
-            dark: (0.85, 0.85, 0.88)
-        )
-        }
-    }
-
-    /// 这一档纸在视觉上属于哪套外观——卷页那层（UIKit）照着它把 traits 钉死。
-    ///
-    /// 为什么不由系统外观裸决定：`uiBackground` 是动态色，取值要看宿主视图的
-    /// traits，而翻页的纸是缓存里的 `UIHostingController`，脱离视图树时系统从浅
-    /// 切深它收不到更新——表现就是「底色已经黑了，翻起来那张纸还是亮的」。
-    /// 另一层：夜间档配系统浅色时，页眉那些 `.secondary` 语义色会解成深灰，
-    /// 落在深纸上就是看不见。固定档自己说死深浅，「跟随」才把决定权交回系统。
-    /// 判据和 `backgroundRGB` 同一份：那里只有 `.system` 真的分了 light/dark 两套纸。
-    func userInterfaceStyle(
-        matching systemStyle: UIUserInterfaceStyle
-    ) -> UIUserInterfaceStyle {
-        switch self {
-        case .paper, .cream, .sepia: return .light
-        case .night: return .dark
-        case .system: return systemStyle
-        }
-    }
-
-    /// 由系统 traits 现算的颜色。
-    ///
-    /// 不用 `@Environment(\.colorScheme)` 在读的地方判断：那样每个用到 theme 的视图
-    /// 都得自己接一遍环境值，漏一处就是「切深色了正文还是白底」。
-    private func adaptive(
-        light: (Double, Double, Double),
-        dark: (Double, Double, Double)
-    ) -> Color {
-        Color(
-            uiColor: UIColor { traits in
-                let c = traits.userInterfaceStyle == .dark ? dark : light
-                return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
-            }
-        )
-    }
-
-    /// 没在播的句子淡一档。用透明度而不是换个颜色：主题给的字色只有一种，
-    /// 淡档跟着它走，夜间模式才不会出现「黑底上一片灰字看不见」。
-    var inactiveOpacity: Double { 0.72 }
-}
-
-/// 一页上的一片字。绝大多数情况一片就是一整句；一句太长、页尾塞不下整句时它被切成两片——
-/// 前一片留在这页把页尾填满，后一片 `continues = true` 到下一页开头接着排。
-///
-/// 存的是**切好的文本**，不是「句下标 + 字符区间」：渲染端和测量端都直接拿这一份字去排，
-/// 谁也没机会再切出第二个版本。切分口径只存在于 `paginate` 里一次。
-struct PageSlice: Equatable, Hashable {
-
-    /// 这一片属于哪一句（`chapter.sentences` 的数组下标，和 PlayerManager 同一口径，
-    /// 不然点到A句播B句）。
-    let position: Int
-
-    /// 这一片要排的字。段首缩进那两个全角空格在句首那一片的开头。
-    let text: String
-
-    /// true = 上一页断下来的后半截：不吃段前白、不再缩进、不当成新段落开头。
-    let continues: Bool
-
-    init(
-        position: Int,
-        text: String,
-        continues: Bool = false
-    ) {
-        self.position = position
-        self.text = text
-        self.continues = continues
-    }
-}
-
-struct PageLayout: Equatable {
-
-    /// `pages[p]` = 第 p 页承载的那几片字，按排版顺序。
-    let pages: [[PageSlice]]
-
-    let bodySize: CGFloat
-
-    var pageCount: Int { pages.count }
-
-    static let placeholder = PageLayout(pages: [[]], bodySize: 19)
-
-    /// 一页给正文用的高度。**这个减法只写在这里**：分页端用它，探针也问它。
-    ///
-    /// 从前它藏在 `paginate` 里、末尾还乘了 0.95，于是三份探针各自抄了一遍那个数——
-    /// 改了生产忘了探针，探针量到的就是上一页的几何，正好看见不到「每页少一行」。
-    /// 上下各让 18pt 是渲染端那层 `.padding(.vertical,)` 的账，两边必须是同一个数。
-    static func usableHeight(area: CGSize, body: CGFloat) -> CGFloat {
-        max(
-            area.height - ReaderTypography.verticalMargin * 2,
-            body * 3
-        )
-    }
-
-    /// 该句落在第几页。一句被切成两片时算**前**一片那页：跟读要在这一句开口时就把页翻过去，
-    /// 不能等它念完。句子比页数「超范围」时（比如刚重排、或播放已推进到未渲染的句子）
-    /// 返回最后一页，而不是崩掉。
-    func page(containing sentence: Int) -> Int {
-        var last = 0
-        for (index, page) in pages.enumerated() {
-            if let first = page.first?.position, sentence < first {
-                return max(index - 1, 0)
-            }
-            last = index
-        }
-        return last
-    }
-
-    // MARK: - Paginate
-
-    static func paginate(
-        _ sentences: [Sentence],
-        in area: CGSize,
-        scale: Double,
-        lineScale: Double,
-        chapterTitle: String
-    ) -> PageLayout {
-
-        guard area.width > 40, area.height > 40 else {
-            return placeholder
-        }
-
-        let body = ReaderTypography.bodySize(scale: scale)
-
-        let lineSpacing = ReaderTypography.lineSpacing(size: body, scale: lineScale)
-
-        let contentWidth = max(
-            area.width - ReaderTypography.horizontalMargin * 2,
-            40
-        )
-        // 量高走 TextKit1 的行框（`ReaderBlock.lineRects`），和渲染端同一个排版器、同一个
-        // padding=0 的容器：探针把同一段画两遍逐块对过，渲染高 − 测量高 落在 0 ~ −0.7pt，
-        // 没有正的（`.probe/justify-probe.swift` C 段）。从前这里是 CoreText 的 `boundingRect`，
-        // 它报的高和它自己断出的行对不上，最多虚高一整行——那才是「分页高比纸上多」的根。
-        //
-        // 不打折（见 `usableHeight`）：那层 0.95 是给 `boundingRect` 的虚高兜底的，量法换正
-        // 之后它只剩一个效果——真机口径下版心 693pt、行距 28pt，658.35 只够 23 行，而纸上
-        // 放得下 24 行，于是「页尾莫名空一行」每页都发生。测量端报矮的方向已被探针堵死，
-        // 用满不会溢到纸外；真溢出一行也只是被 `clipped()` 剪掉，换回来的是每章少翻几页。
-        let usableHeight = Self.usableHeight(area: area, body: body)
-
-        func measure(
-            _ runs: [ReaderBlock.Run]
-        ) -> CGFloat {
-            ReaderBlock.height(
-                runs: runs,
-                body: body,
-                lineSpacing: lineSpacing,
-                width: contentWidth
-            )
-        }
-
-        // 整章先摊成「一片 = 一整句」，按同段并成块，再贪心装页。
-        // 页边界怎么切（含句内切）在下面那个循环里。
-        let blocks = ReaderBlock.groups(
-            in: sentences.indices.map {
-                PageSlice(
-                    position: $0,
-                    text: ReaderTypography.displayText(
-                        sentences[$0],
-                        chapterTitle: chapterTitle
-                    )
-                )
-            },
-            sentences: sentences,
-            chapterTitle: chapterTitle
-        )
-
-        var pages: [[PageSlice]] = []
-        var current: [PageSlice] = []
-
-        /// 本页上已经收尾的那些块的总高。
-        var committed: CGFloat = 0
-
-        /// 当前块在本页已经排上的片段。
-        ///
-        /// 量高必须连着量：同段的句子渲染时在一个 `Text` 里连着走，一片一片各量各的
-        /// 会在每个折行处多算一行，页尾就溢出去。
-        var blockRuns: [ReaderBlock.Run] = []
-
-        var blockGap: CGFloat = 0
-
-        var blockIndex = 0
-
-        /// 当前块排到第几片。一段跨页时它不为 0：后半截要在下一页开头。
-        var entryIndex = 0
-
-        /// 当前这一片已经被上一页切走了多少个字。0 = 还是一片完整的句子。
-        var entryOffset = 0
-
-        func blockHeight() -> CGFloat {
-            blockRuns.isEmpty ? 0 : blockGap + measure(blockRuns)
-        }
-
-        func closePage() {
-            pages.append(current)
-            current = []
-            committed = 0
-            blockRuns = []
-            blockGap = 0
-        }
-
-        /// 这一片最多能切多少个字进本页剩下的空间。nil = 切不动（不到一行、太短、章标题）。
-        ///
-        /// 页尾留白的真身不是「下一段太长」，是「下一句比剩下的空间高」：整句挪走，
-        /// 这页就空出一片（真机截图量到过 175pt，占了版心四分之一）。书是照行断的，
-        /// 这里也照行断。
-        func splitPoint(
-            _ rest: String,
-            continues: Bool,
-            position: Int,
-            spare: CGFloat
-        ) -> Int? {
-
-            // 章标题居中排，切开就是两行半截标题。
-            guard !ReaderTypography.isChapterHeading(
-                sentences[position],
-                chapterTitle: chapterTitle
-            ) else { return nil }
-
-            // 前后各留几个字：本页末尾只挂一个字、或者下一页开头孤零零两三个字，
-            // 比留白还难看。
-            let minHead = 4
-            let minTail = 6
-
-            guard rest.count >= minHead + minTail else { return nil }
-
-            func heightOf(_ count: Int) -> CGFloat {
-                let pieceRuns = ReaderBlock.runs(
-                    for: [
-                        PageSlice(
-                            position: position,
-                            text: String(rest.prefix(count)),
-                            continues: continues
-                        )
-                    ],
-                    sentences: sentences,
-                    chapterTitle: chapterTitle
-                )
-                return measure(blockRuns + pieceRuns)
-            }
-
-            // 高度随字数单调不降，二分找塞得下的最长前缀。
-            var low = minHead
-            var high = rest.count - minTail
-            var best = 0
-
-            while low <= high {
-                let mid = (low + high) / 2
-                if heightOf(mid) <= spare {
-                    best = mid
-                    low = mid + 1
-                } else {
-                    high = mid - 1
-                }
-            }
-
-            guard best > 0 else { return nil }
-
-            // 切点再收一下：别断在英文单词中间，别把「。」这类收尾标点甩到下一页开头，
-            // 也别让「「」这类开头标点吊在本页末尾。三种都只是难看，不影响高度
-            // ——往前收只会更矮，所以不用再量一遍。
-            let cut = tidy(best, in: Array(rest))
-
-            guard cut >= minHead else { return nil }
-
-            return cut
-        }
-
-        while blockIndex < blocks.count {
-
-            let block = blocks[blockIndex]
-            let entry = block[entryIndex]
-
-            let rest = String(entry.text.dropFirst(entryOffset))
-            let continues = entryOffset > 0
-
-            let slice = PageSlice(
-                position: entry.position,
-                text: rest,
-                continues: continues
-            )
-
-            let runs = ReaderBlock.runs(
-                for: [slice],
-                sentences: sentences,
-                chapterTitle: chapterTitle
-            )
-
-            if blockRuns.isEmpty {
-                blockGap = ReaderBlock.gap(
-                    first: slice,
-                    firstOnPage: current.isEmpty,
-                    sentences: sentences,
-                    size: body,
-                    lineSpacing: lineSpacing
-                )
-            }
-
-            let spare = usableHeight - committed - blockGap
-
-            if measure(blockRuns + runs) <= spare {
-
-                current.append(slice)
-                blockRuns += runs
-
-                entryIndex += 1
-                entryOffset = 0
-
-                // 这一块排完了：交账，下一块另起一份累计。
-                if entryIndex == block.count {
-                    committed += blockHeight()
-                    blockRuns = []
-                    blockGap = 0
-                    blockIndex += 1
-                    entryIndex = 0
-                }
-
-                continue
-            }
-
-            if current.isEmpty {
-                // 空页都装不下这一句（超长引用、极小屏）：让它先占着这一页，
-                // 宁可溢出让滚动兜底，也不能反复往空页里塞同一句（那是死循环）。
-                current.append(slice)
-
-                entryIndex += 1
-                entryOffset = 0
-
-                if entryIndex == block.count {
-                    blockIndex += 1
-                    entryIndex = 0
-                }
-
-                closePage()
-                continue
-            }
-
-            if let cut = splitPoint(
-                rest,
-                continues: continues,
-                position: entry.position,
-                spare: spare
-            ) {
-                current.append(
-                    PageSlice(
-                        position: entry.position,
-                        text: String(rest.prefix(cut)),
-                        continues: continues
-                    )
-                )
-
-                // 这一片剩下的半截 nextPage 开头接着排，块和条目都不动。
-                entryOffset += cut
-
-                closePage()
-                continue
-            }
-
-            // 切不动（剩下的空间不到一行、太短、或者是章标题）：本页收尾，整片挪下一页。
-            closePage()
-        }
-
-        if !current.isEmpty {
-            pages.append(current)
-        }
-        if pages.isEmpty {
-            pages.append([])
-        }
-
-        return PageLayout(pages: pages, bodySize: body)
-    }
-
-    /// 把二分找到的切点往前挪到一处不难看的位置。
-    ///
-    /// 只往前退、不往后扩，所以「塞得下」这个前提一直成立，不用再量一遍高度。
-    ///
-    /// 这里一律写 `Swift.Character`：本模块有个「小说角色」就叫 `Character`，
-    /// 光写裸名拿到的是那个模型结构体，不是排版意义上的一个字。
-    private static func tidy(_ cut: Int, in rest: [Swift.Character]) -> Int {
-
-        var k = cut
-
-        if k < rest.count,
-           isLatin(rest[k]),
-           isLatin(rest[k - 1]) {
-            // 断在了英文单词中间：整个词让给下一页。最多让 24 个字，再长就是个网址
-            // 之类的东西，宁可断在词中也不要退到没字可排。
-            var back = 0
-            while back < 24, k - back - 1 >= 0, isLatin(rest[k - back - 1]) {
-                back += 1
-            }
-            k -= back
-        }
-
-        // 收尾标点不能顶在下一页第一格，开头标点不能吊在本页最后一格。
-        let opening = "「『（《“‘【"
-        let closing = "。，、；：？！」』）》”’】…"
-
-        while k > 1 {
-            let danglingOpen = opening.contains(String(rest[k - 1]))
-            let leadingClose = k < rest.count && closing.contains(String(rest[k]))
-            guard danglingOpen || leadingClose else { break }
-            k -= 1
-        }
-
-        return k
-    }
-
-    /// ASCII 字母与数字，也就是「一个英文词」的边界。中文一个字一格，没有词中间可断。
-    private static func isLatin(_ c: Swift.Character) -> Bool {
-        guard c.unicodeScalars.count == 1,
-              let scalar = c.unicodeScalars.first
-        else { return false }
-
-        switch scalar.value {
-        case 0x41...0x5A, 0x61...0x7A, 0x30...0x39: return true
-        default: return false
-        }
-    }
 }
