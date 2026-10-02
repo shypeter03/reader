@@ -630,6 +630,10 @@ private extension ReaderView {
         let local = found?.local ?? 0
         let isMain = found.map { $0.sheet.chapter.id == main.chapter.id } ?? true
 
+        /// 这一页摊几栏、每栏从哪儿起、每栏的行距挪多少。越界时它退回单栏 + 0，
+        /// 和下面 `slices` 那一句的「拿不到就交空页」是同一个兜底口径。
+        let spread = sheet.layout.columns(onPage: local)
+
         return ReaderPageView(
             sentences: sheet.chapter.sentences,
             slices: sheet.layout.pages.indices.contains(local)
@@ -637,14 +641,20 @@ private extension ReaderView {
                 : [],
             bodySize: sheet.layout.bodySize,
             lineScale: lineScale,
-            lineSpacingExtra: sheet.layout.stretch(forPage: local),
+            columnCuts: spread.cuts,
+            columnStretch: spread.stretch,
             theme: theme,
             chapterTitle: sheet.chapter.title,
             activePosition: isMain && speechEnabled
                 ? player.currentSentenceIndex
                 : nil,
             tap: { position in
-                guard isMain else { return }
+                // [Tap] 取证（#162）：点到了预取进来的相邻那一面——那一句不在播放器手上，
+                // 按口径就该丢掉，但得看得见是这一条丢的，别记到「派发」头上。
+                guard isMain else {
+                    print("[Tap] 丢：落在相邻那一面的纸上 pos=\(position)")
+                    return
+                }
                 handleTap(position)
             },
             runningHead: sheet.descriptor.backLabel,
@@ -727,6 +737,10 @@ private extension ReaderView {
     /// 起播和唤按钮都只从这一个口子走，所以「双击顺带把那句读了一遍」不可能再发生：
     /// 第一下先攒 `tapWindow` 再起播，期间再来一下就是双击——把攒着的那次朗读作废，
     /// 只唤按钮。代价是单击起播慢 0.25s，换来双击就是双击、单击就是单击。
+    ///
+    /// [Tap] 取证（#162）：同一下点击有两路上报（run 的 link 和外面的分区点击），
+    /// 落到哪个分支、两路隔了多少毫秒，只能从日志里读——「点了没反应」在屏幕上
+    /// 长得一模一样，分支不打分就分不出是派发丢了还是仲裁误判。
     func handleTap(
         _ position: Int?
     ) {
@@ -737,13 +751,19 @@ private extension ReaderView {
 
         lastTapAt = now
 
+        let gap = Int(sinceLast * 1000)
+
+        print("[Tap] 分支入口 pos=\(String(describing: position)) 距上次 \(gap)ms 有在飞的起播=\(pendingPlay != nil)")
+
         if now.timeIntervalSince(lastZoneTurnAt) < Self.tapEcho {
             // 这一下已经被翻页带认走了：同一下点击的两路上报，以翻页为准。
+            print("[Tap] 分支=已被翻页带走")
             return
         }
 
         if sinceLast < Self.tapEcho {
             // 同一下点击被两层各报了一次：以拿到句子的那次为准，不再另起一次。
+            print("[Tap] 分支=回声 \(gap)ms")
             if let position, pendingPlay == nil {
                 schedulePlay(position)
             }
@@ -751,6 +771,7 @@ private extension ReaderView {
         }
 
         if pendingPlay != nil || sinceLast < Self.tapWindow {
+            print("[Tap] 分支=当作双击（取消在飞的起播）\(gap)ms")
             pendingPlay?.cancel()
             pendingPlay = nil
             toggleChrome()
@@ -759,6 +780,8 @@ private extension ReaderView {
 
         if let position {
             schedulePlay(position)
+        } else {
+            print("[Tap] 分支=空处，什么都不做")
         }
     }
 
@@ -767,7 +790,12 @@ private extension ReaderView {
     ) {
 
         // 播报关着：点句只是点句，不排那 0.25s 的起播。
-        guard speechEnabled else { return }
+        guard speechEnabled else {
+            print("[Tap] 不起播：语音播报关着 pos=\(position)")
+            return
+        }
+
+        print("[Tap] 排起播 pos=\(position)（\(Int(Self.tapWindow * 1000))ms 后才真开口）")
 
         pendingPlay = Task { @MainActor in
 
@@ -781,6 +809,8 @@ private extension ReaderView {
 
             // 这一句是人自己点的，页该重新跟着声音走了。
             followAudio = true
+
+            print("[Tap] 起播 pos=\(position)")
 
             player.playSentence(at: position)
         }
@@ -801,6 +831,9 @@ private extension ReaderView {
         guard width > 0 else { return }
 
         let band = width * Self.turnZoneRatio
+
+        // [Tap] 取证（#162）：分区这一路拿到的是哪条带、落点离边多远。
+        print("[Tap] 路=zone x=\(String(format: "%.0f", x)) 带宽=\(String(format: "%.0f", band)) 屏宽=\(String(format: "%.0f", width))")
 
         if x < band {
             turnPage(forward: false)

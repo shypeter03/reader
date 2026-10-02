@@ -24,14 +24,25 @@ struct ReaderPageBody: View {
     /// 行距档位。必须和 `PageLayout.paginate` 喂的是同一个数，否则页高算错。
     let lineScale: Double
 
-    /// 垂直对齐：这一页每条行距缝在基础行距上再多抬这么多，把末行压到版心底。
-    /// 来自 `PageLayout.pageStretch`（分页时按这一页剩下的余量算出来），章末页是 0。
-    /// 渲染端把它同时加到 `.lineSpacing` 和段前白 `gap` 里含的那个 `lineSpacing` 上——
-    /// 分页摊余量时正是按「这两类缝一起抬」数的缝，两边必须一致，否则末行压不到底。
-    var lineSpacingExtra: CGFloat = 0
+    /// 每栏在 `slices` 里的起始下标（`PageLayout.columnCuts`），一项一栏。
+    ///
+    /// 栏数由分页端按纸宽判一次，渲染端只跟着这一项数走，**不再自己按宽判一遍**——
+    /// 判两遍就会出现「分页按两栏切、纸上按一栏排」。
+    var columnCuts: [Int] = [0]
 
-    /// 版心宽（纸上正文那一块的宽，已经让开左右边距）。硬换行的落点按它算，
-    /// 必须和 `ReaderBlock.height` 量的是同一个数——两边各算各的，页尾就溢出。
+    /// 垂直对齐：每栏在**基础行距**上再挪这么多，把这一栏的末行落到版心底。
+    /// 来自 `PageLayout.columnStretch`（分页时按这一栏剩下的余量算出来），正 = 抬、负 = 压；
+    /// 章末那一栏只会拿到 0 或负数（它下面本来就该留白，不许往上抬）。
+    /// 渲染端把它同时加到 `.lineSpacing` 和段前白 `gap` 里含的那个 `lineSpacing` 上——
+    /// 分页摊余量时正是按「这两类缝一起挪」数的缝，两边必须一致，否则末行落不到底。
+    ///
+    /// 为什么按栏给而不是整页一个数：两栏的余量是两笔独立的账，共用一个挪量的话两栏的
+    /// 底边最多差出一行，读者看见的就是「两栏没对齐」。
+    var columnStretch: [CGFloat] = [0]
+
+    /// 版心宽（纸上正文那一整块的宽，已经让开左右边距）。分栏时它是各栏宽加栏空的和，
+    /// 一栏多宽由 `columnWidth` 从这一个数算出来。必须和 `ReaderBlock.height` 量的是同一个
+    /// 口径——两边各算各的，栏尾就溢出。
     let contentWidth: CGFloat
 
     /// 底色与字色。不参与测量，只参与渲染。
@@ -47,42 +58,20 @@ struct ReaderPageBody: View {
 
     var body: some View {
 
-        let groups = ReaderBlock.groups(
-            in: slices,
-            sentences: sentences,
-            chapterTitle: chapterTitle
-        )
-
-        VStack(
-            alignment: .leading,
-            spacing: 0
+        // 一栏一栏并排放。外层的 `.padding(.horizontal, 22)` / `.padding(.vertical, 18)`
+        // 一点没动：分栏切的是版心里面，纸的四边还是那四个数——栏宽 + 栏空正好等于
+        // `contentWidth`，所以左右边距在单栏和两栏下是同一个 22pt。
+        HStack(
+            alignment: .top,
+            spacing: ReaderTypography.columnGutter(body: bodySize)
         ) {
 
-            if slices.isEmpty, sentences.isEmpty {
-
-                // 只在「这一章真的没有正文」时说这句话。首次布局还没跑完时
-                // 页也是空的，那种时候留白，别闪一下提示。
-                Text(
-                    "这一章没有可朗读的正文（图片页或空白页）"
-                )
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(
-                    maxWidth: .infinity,
-                    alignment: .center
-                )
-                .padding(.top, 40)
-            }
-
             ForEach(
-                Array(groups.enumerated()),
+                Array(columnCuts.enumerated()),
                 id: \.offset
-            ) { index, group in
+            ) { index, _ in
 
-                blockView(
-                    group,
-                    firstOnPage: index == 0
-                )
+                columnView(index)
             }
         }
         .padding(
@@ -103,6 +92,9 @@ struct ReaderPageBody: View {
             \.openURL,
             OpenURLAction { url in
 
+                // [Tap] 取证（#162）：这一路报了吗？没报就是落点没交成 link。
+                print("[Tap] 路=link url=\(url)")
+
                 guard url.scheme == "reader",
                       url.host == "sentence",
                       let position = Int(url.lastPathComponent),
@@ -116,11 +108,99 @@ struct ReaderPageBody: View {
         )
     }
 
+    /// 一栏多宽。栏数取 `columnCuts.count`，也就是分页端判定的那个数：两边都走
+    /// `ReaderTypography` 这一条式子，「量的那一栏」和「画的那一栏」才会是同一个宽。
+    private var columnWidth: CGFloat {
+        ReaderTypography.columnWidth(
+            contentWidth: contentWidth,
+            columns: max(columnCuts.count, 1),
+            body: bodySize
+        )
+    }
+
+    /// 第 `index` 栏在 `slices` 里占的那一段（`columnCuts` 是给整页摊平的下标表）。
+    /// 两头都夹进范围：换章那一瞬可能还拿着上一章算出来的栏位表，越界只能丢掉，不能崩。
+    private func columnRange(
+        _ index: Int
+    ) -> Range<Int> {
+
+        func clamp(_ value: Int) -> Int {
+            min(max(value, 0), slices.count)
+        }
+
+        let start = clamp(
+            columnCuts.indices.contains(index) ? columnCuts[index] : slices.count
+        )
+        let end = columnCuts.indices.contains(index + 1)
+            ? max(clamp(columnCuts[index + 1]), start)
+            : slices.count
+
+        return start..<end
+    }
+
+    /// 这一栏：属于它的那一片字，一块一个 `Text`，末行按这一栏自己的挪量落到版心底。
+    @ViewBuilder
+    private func columnView(
+        _ index: Int
+    ) -> some View {
+
+        let column = Array(slices[columnRange(index)])
+
+        let groups = ReaderBlock.groups(
+            in: column,
+            sentences: sentences,
+            chapterTitle: chapterTitle
+        )
+
+        let extra = columnStretch.indices.contains(index)
+            ? columnStretch[index]
+            : 0
+
+        VStack(
+            alignment: .leading,
+            spacing: 0
+        ) {
+
+            if column.isEmpty, sentences.isEmpty {
+
+                // 只在「这一章真的没有正文」时说这句话。首次布局还没跑完时
+                // 页也是空的，那种时候留白，别闪一下提示。
+                Text(
+                    "这一章没有可朗读的正文（图片页或空白页）"
+                )
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: .center
+                )
+                .padding(.top, 40)
+            }
+
+            ForEach(
+                Array(groups.enumerated()),
+                id: \.offset
+            ) { blockIndex, group in
+
+                blockView(
+                    group,
+                    firstOnColumn: blockIndex == 0,
+                    lineSpacingExtra: extra
+                )
+            }
+        }
+        .frame(
+            width: columnWidth,
+            alignment: .top
+        )
+    }
+
     /// 一块一个 `Text`：同段的句子连着走，行距从头到尾一个值。
     @ViewBuilder
     private func blockView(
         _ group: [PageSlice],
-        firstOnPage: Bool
+        firstOnColumn: Bool,
+        lineSpacingExtra: CGFloat
     ) -> some View {
 
         let runs = ReaderBlock.runs(
@@ -131,7 +211,7 @@ struct ReaderPageBody: View {
 
         let heading = runs.first?.kind == .heading
 
-        // 基础行距 + 这一页的垂直对齐拉伸。段前白 `gap` 里含一个 `lineSpacing`，
+        // 基础行距 + 这一栏的垂直对齐拉伸。段前白 `gap` 里含一个 `lineSpacing`，
         // 所以把抬过的 `spacing` 一起喂给它，段前白那条缝也跟着多抬 `lineSpacingExtra`
         // ——分页摊余量时按「块内行距缝 + 段前白缝」一起数的，这里少抬一条末行就压不到底。
         let spacing = ReaderTypography.lineSpacing(
@@ -143,7 +223,7 @@ struct ReaderPageBody: View {
             ReaderBlock.attributedString(
                 runs: runs,
                 body: bodySize,
-                width: contentWidth,
+                width: columnWidth,
                 color: color(for:)
             )
         )
@@ -163,7 +243,7 @@ struct ReaderPageBody: View {
                 .top,
                 ReaderBlock.gap(
                     first: group[0],
-                    firstOnPage: firstOnPage,
+                    firstOnPage: firstOnColumn,
                     sentences: sentences,
                     size: bodySize,
                     lineSpacing: spacing
@@ -240,9 +320,11 @@ struct ReaderPageView: View {
 
     let lineScale: Double
 
-    /// 垂直对齐那一档行距拉伸，透传给 `ReaderPageBody`。分页时按这一页的余量算出来
-    /// （`PageLayout.pageStretch`），章末页和探针基线口径是 0。
-    var lineSpacingExtra: CGFloat = 0
+    /// 这一页摊成几栏、每栏从 `slices` 的哪个下标起（`PageLayout.columnCuts`），
+    /// 连同每栏的行距挪量（`columnStretch`）。透传给 `ReaderPageBody`。
+    /// 默认单栏、不挪行距——探针的基线口径和章末页就是这一档。
+    var columnCuts: [Int] = [0]
+    var columnStretch: [CGFloat] = [0]
 
     let theme: ReaderTheme
 
@@ -289,7 +371,8 @@ struct ReaderPageView: View {
                     slices: slices,
                     bodySize: bodySize,
                     lineScale: lineScale,
-                    lineSpacingExtra: lineSpacingExtra,
+                    columnCuts: columnCuts,
+                    columnStretch: columnStretch,
                     contentWidth: paper.size.width - ReaderTypography.horizontalMargin * 2,
                     theme: theme,
                     chapterTitle: chapterTitle,

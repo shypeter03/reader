@@ -87,7 +87,18 @@ enum DialogueAttribution {
     /// 而档案里是「韩世忠」「赵玖」——查声靠 ``CharacterRoster`` 的前缀折叠还归同一把嗓，
     /// 可这个人的「说过几次话」被自己的残渣分掉了，入档闸门（说≥2、被称呼≥1）反倒过不去，
     /// 台词便整句退回旁白嗓。改的是**存下来的说话人是谁**，老章节重认一遍。
-    static let annotationVersion = 9
+    /// 10：两条一起改的是**档案里有谁**，提取口径没动（四个字以上的串照旧吐出来）：
+    /// ①``CharacterAnalysis/foldResidues`` 新增形状并档——四个字的串既不是复姓打头、
+    /// 收尾也不是称谓（``explainableLongName``），那它是「姓+名+状语」（「杨毅焦急」），
+    /// 不许单独立档，它的「说过话／被称呼／出场」并给同句里那个真名。以前这种脏串各占
+    /// 一条档案、各钉一把嗓，同一段里真名与脏串交替念——用户报的「上一句一个声音，
+    /// 下一句另一个声音」。配角出场次数不够 20 时按出场次数的并档折不动，所以这一刀
+    /// 不能只靠 ``CharacterRoster/prefixFolds``。
+    /// ②``countAddressed`` 收窄称呼证据——「盯着王林愣了一下」从前同时给「王林」和
+    /// 「王林愣」记一笔「被人当人称呼过」，于是三字残渣也进得了档案（说≥2 且被称呼≥1），
+    /// 跟真名各钉一把嗓：同一个人的台词一句男声、一句旁白。
+    /// 档案池变了，``personName(in:knownNames:)`` 那条放宽认出来的说话人跟着变，老章节重认一遍。
+    static let annotationVersion = 10
 
     static let minNameLength = 2
     static let maxNameLength = 4
@@ -372,6 +383,9 @@ enum DialogueAttribution {
     /// 分句开头是不是一个名字：从最长试到两字，取第一个成形的。
     /// 多带一个字（「苏檀儿捂」）没关系——档案归并按出场次数把它并回「苏檀儿」，
     /// 查声时也是按前缀查的，两句还是同一把嗓。
+    /// 四个字的串（「杨毅焦急」这种「姓+名+两字状语」）也照旧吐出来：这里是**提取**，
+    /// 砍在这里会把同句真名一起砍掉（赘婿实测严格口径 455 句→213 句，代价减半还多）。
+    /// 脏串进不了档案——``CharacterAnalysis/foldResidues`` 按形状把它并回真名。
     /// 名字后面紧接「的」整段作废：「苏檀儿的丫鬟低声道」说话的是丫鬟。
     private static func leadingNameRun(_ clause: [String.Element]) -> String? {
         let longest = min(maxNameLength, clause.count)
@@ -444,6 +458,14 @@ enum DialogueAttribution {
     /// 而状语的第一个字几乎不会撞上一个姓）。所以反过来判：首字不在姓表里就不是名字。
     /// 代价是极罕见姓的人物（随、淡、那、乌）认不出来，退回无名男声——比把「低头」当成
     /// 一个人、让一堆不同人的台词共用一把嗓划算。
+    ///
+    /// 但首字姓表只管得到**左边界**：「杨毅焦急说道」这一段，姓表认出「杨」打头，
+    /// 虚词表看串里没有「的了着」，两道都放行，于是尾巴上那截状语跟着名字一起落库，
+    /// 存成「杨毅焦急」这么个不存在的人（用户报的第一条）。右边界只能靠**结构**定
+    /// （见 ``explainableLongName``），可它**不许落在提取上**：试过砍在 `validPersonName`
+    /// 里，赘婿 60 章严格口径从 455 句掉到 213 句——那些串的真名就在同一句开头，
+    /// 整段作废等于连真名一起丢。所以这一刀砍在**并档**上：脏串照样吐出来，
+    /// 但它的「说过话／被称呼／出场」全部并给同句那个真名，自己进不了档案。
     static func validPersonName(_ name: String) -> String? {
         let digits = Set("0123456789０１２３４５６７８９")
         guard name.count >= minNameLength, name.count <= maxNameLength,
@@ -453,6 +475,22 @@ enum DialogueAttribution {
               let first = name.first, surnameHeads.contains(first) || hasCompoundSurname(name)
         else { return nil }
         return name
+    }
+
+    /// 长到四个字的串得有个**说法**：要么打头是复姓（「司马」「长孙」那一类），
+    /// 要么收尾是个称谓（「韩立师兄」「吴贵妃」）。
+    ///
+    /// 为什么单挑四个字：汉字名字到四个字只有那两类写法，而提示语吃进状语时产出的
+    /// 恰恰也是四个字——「杨毅焦急」「赵玖恍然」「宁毅无奈」「陆阿贵连」这种
+    /// 「姓+名+两字状语」。三字以下没法这么判（「王林海」是双名，「杨毅急」是残渣，
+    /// 字面上同形），那一档只能靠 ``CharacterAnalysis/countAddressed`` 收窄称呼证据来拦。
+    /// 状语是开口集合，列不完；姓和称谓是闭口的，列得完——所以判据落在闭口表上。
+    /// 用在哪：``CharacterAnalysis/foldResidues`` 的形状并档。代价是「姓+三字名」这种
+    /// 极少数写法会被并到自己两字前缀上——听感上只是同一个人少了一把独立的嗓。
+    static func explainableLongName(_ name: String) -> Bool {
+        hasCompoundSurname(name)
+            || CharacterAnalysis.hasGenderTitle(name)
+            || relationTitles.contains { name.hasSuffix($0) }
     }
 
     /// 名字里的字只能是个汉字。真机日志里出现过「大（上白」这种说话人：提示语段跨过了括号，
@@ -911,6 +949,10 @@ enum CharacterAnalysis {
     }
     /// 「看到了宁毅」——动词和名字之间只许跨过这一个字的助词，再多就不是宾语了。
     private static let relatorParticles: Set<String.Element> = ["了", "着", "过"]
+    /// 只有**动词**才跟得上这几个字（动态助词了/着/过、可能补语得、处所动词在）。
+    /// 一个名字后面出现它们，说明这一串里最后那个字是谓语，不是人名的一部分
+    /// ——见 ``countAddressed`` 里治「王林愣」入档那一条。
+    private static let verbParticles: Set<String.Element> = ["了", "着", "过", "得", "在"]
 
     private static func countAddressed(
         _ characters: [String.Element],
@@ -931,6 +973,19 @@ enum CharacterAnalysis {
                 for length in DialogueAttribution.minNameLength...longest {
                     let candidate = String(characters[start..<(start + length)])
                     guard DialogueAttribution.validPersonName(candidate) != nil else { continue }
+                    // 三个字以上的串，后面紧跟动相助词时这一处**不是**这个名字：
+                    // 「盯着王林愣了一下」里被盯的人是王林，「愣」是动词，「了」是它的动态助词。
+                    // 这一条治的是入档那一路（见 ``CharacterRoster`` 的「被称呼≥1」闸门）：
+                    // 一次「看向/盯着」会把 2、3、4 字各记一笔，于是「王林愣」这种
+                    // 「姓+名+动」的残渣也攒够了「被当人称呼过」，跟真名一起进档案、各钉一把嗓，
+                    // 同一个人的台词便一句旁白、一句男声地交替（用户报的第二条）。
+                    // 只管三个字以上：两字的真名后面确实会跟「在/了」（「看见王林在门口」），
+                    // 那一刀会砍到真人身上；而三字串撞上这种助词，几乎只会是残渣。
+                    // 代价：真·三字名（「刘子羽」）在「X在家里」这一式里少记一笔称呼，
+                    // 入档要的是一辈子≥1，别处「看向刘子羽。」就补上了。
+                    let after = start + length
+                    if length > DialogueAttribution.minNameLength, after < characters.count,
+                       verbParticles.contains(characters[after]) { continue }
                     counts[candidate, default: 0] += 1
                 }
             }
@@ -971,11 +1026,13 @@ enum CharacterAnalysis {
     /// ②「赵玖背身」「宁毅看看」——名字打头、后面挂着表里没写的状语或动词；
     /// ③「只见韩立」——提示语最多吃进 12 个字，所以修饰可能在前、名字在后。
     ///
-    /// ② 的判据是**出场次数**，不是「当说话人的次数」：分句主语那条形状（③）产出的残渣
+    /// ② 的判据**通常**是出场次数，不是「当说话人的次数」：分句主语那条形状（③）产出的残渣
     /// 恰恰最常当说话人（「宁毅看看旁边的周佩与周君武，这才笑着问道：“…”」），拿说话人
     /// 次数比就变成「宁毅看」赢过「宁毅」，同一个人两把嗓——实测就是这么错的。
     /// 比之前还要先扣掉「作为更长名字的一截」出现的那部分：「苏檀」的 608 次全都包在
     /// 「苏檀儿」里，扣完归零，于是它不会把苏檀儿吃掉；「宁毅」扣掉「宁毅看」那些次还是压倒性。
+    /// 唯一的例外是四个字的串（见下面 `shapeVoid` 那段）：形状已经判死它不是名字，
+    /// 就不必再等次数——等次数那一关正是配角脏名入档的路。
     private static func foldResidues(
         _ speakers: [String: Int],
         addressed: [String: Int],
@@ -996,15 +1053,28 @@ enum CharacterAnalysis {
             let stem = DialogueAttribution.stem(name)
             let head = own[stem, default: 0] > 0 ? stem : name
             var target = head
+            // 「杨毅焦急」「赵玖恍然」这种四个字的串**按形状**就不是名字：汉字名字到四字只有
+            // 复姓打头、称谓收尾两种写法（``DialogueAttribution/explainableLongName``），
+            // 剩下的都是提示语把状语一起吃进了名字（用户报的第一条）。这种串不许单独立档——
+            // 它一进档案就钉一把自己的嗓，同一个人的台词一句男声一句旁白交替（用户报的第二条）。
+            // 为什么这一刀不看出场次数：按次数的并档（``CharacterRoster/prefixFolds``）是照
+            // 主角的量定的，绍宋里杨毅出场不到 20 次，脏串「杨毅焦急」折不动、照样入档。
+            // 形状是闭口表判出来的，比次数硬，所以它绕过次数那一关直接并。
+            let shapeVoid = head.count >= DialogueAttribution.maxNameLength
+                && !DialogueAttribution.explainableLongName(head)
             // 从**最短**的那截试起，第一个压得住的就是名字。反过来（先试长的）会把残渣
             // 并到另一个残渣上：「宁毅看他」→「宁毅看」→ 档案里就多出一个叫「宁毅看」的人，
             // 和「宁毅」两把嗓——实测就是这样留下了 宁毅看。
             for length in DialogueAttribution.minNameLength..<max(head.count, DialogueAttribution.minNameLength) {
                 let prefix = String(head.prefix(length))
-                guard speakers[prefix] != nil, (own[prefix] ?? 0) >= (own[head] ?? 0) else { continue }
+                guard speakers[prefix] != nil else { continue }
+                guard shapeVoid || (own[prefix] ?? 0) >= (own[head] ?? 0) else { continue }
                 target = prefix
                 break
             }
+            // 形状判死、前缀里又没有一个人当过说话人：这一串的「说过话」整笔丢掉。
+            // 宁可那句退回旁白（听感是没人换嗓），也不能让一个不存在的人拿走一把嗓。
+            if shapeVoid, target == head { continue }
             counts[target, default: 0] += count
             // 残渣并入真名时，它那条「被人称呼过」的证据要跟着一起并过去。
             addressEvidence[target, default: 0] += addressEvidence[name] ?? 0

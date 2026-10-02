@@ -69,4 +69,57 @@ enum ReaderTypography {
 
     static let horizontalMargin: CGFloat = 22
     static let verticalMargin: CGFloat = 18
+
+    // MARK: - 分栏
+
+    /// 一栏至少要容得下这么多个字，才许再开第二栏。
+    ///
+    /// 为什么按宽度判、不按 `userInterfaceIdiom` / sizeClass：iPad 的分屏、台前调度、Mac 上
+    /// 那个可拉的窗口都是「同一个 App、各种各样的宽」，而真正会把读者绊倒的是**栏太窄**——
+    /// 窄到一行只剩十来个字，两端对齐摊到 `justifyGapCap` 也补不平行尾那半格，纸上就是
+    /// 「每行右边都在抖」。宽度是唯一真的判据，而且分页端和渲染端问的是同一条式子。
+    static let minColumnLetters = 16
+
+    /// 栏与栏之间的空。
+    ///
+    /// 给一栏半的字宽：两栏挨得太近，眼睛换栏时会串行；再宽就是版心里挖走一条大沟，
+    /// 而分栏省下来的字宽本来就不多。
+    static func columnGutter(body: CGFloat) -> CGFloat {
+        body * 1.5
+    }
+
+    /// 一栏的宽。`columns` 栏加 `columns - 1` 条栏空正好铺满 `contentWidth`，
+    /// 所以 `horizontalMargin` 那 22pt 一点没动——分栏切的是版心里面，不是纸的四边。
+    static func columnWidth(
+        contentWidth: CGFloat,
+        columns: Int,
+        body: CGFloat
+    ) -> CGFloat {
+        max(
+            40,
+            (contentWidth - columnGutter(body: body) * CGFloat(max(columns - 1, 0)))
+                / CGFloat(max(columns, 1))
+        )
+    }
+
+    /// 这一张纸摊成几栏。刻意封顶 2：要的是「从中间分成两边」，三栏在横屏上是把一页切三片，
+    /// 读者的眼睛得先跨过一整栏的空白才接着读，那不是读书。
+    static func columnCount(contentWidth: CGFloat, body: CGFloat) -> Int {
+        columnWidth(contentWidth: contentWidth, columns: 2, body: body)
+            >= body * CGFloat(minColumnLetters) ? 2 : 1
+    }
+
+    /// 一块字落纸占的高，比 `ReaderBlock.metrics` 量到的最多多出这么多（点）。
+    ///
+    /// 为什么要预留：每一块是自己一个 `Text`，它要把这一格抬到**屏幕像素网格**上才落纸，
+    /// 于是每块都得往上圆一点。逐块量过（`.probe/main-render-check.swift`，266 块）：
+    /// 落纸高 − 量到高 全在 +0.0 ~ +0.4，**一个负的都没有**（@3x 一格 0.33pt、@2x 一格 0.5pt）。
+    /// 不留这一笔就是「量出来 30 行、纸上 31 行」，而纸不滚动（127 已去掉页内 ScrollView），
+    /// 多出来的那一行读者永远看不见。
+    ///
+    /// 为什么是**加一个常数**而不是把整块 `ceil`：常数对行距严格线性（斜率不变、也不出台阶），
+    /// 分页收尾把余量按缝摊进行距（`PageLayout.stretch(for:)`）才咬得住。从前这里是逐块
+    /// `ceil`，那个取整台阶跟着行距一起动——一页 6 块偏 +1.6pt、13 块偏 +5.3pt，偏出去的
+    /// 正好是「量着排得下、纸上掉一行」的那一行。
+    static let renderGuard: CGFloat = 0.5
 }
