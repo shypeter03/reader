@@ -30,8 +30,24 @@ struct ReaderApp: App {
             // 两者必须在同一个坐标系里，所以这层 GeometryReader 铺满屏幕、不吃安全区。
             GeometryReader { canvas in
 
-                // 阅读页摊开到哪一步：0 落在封面卡上，1 铺满整屏。
-                // 底下那层书库和这层暗幕都按同一个值联动，下拉手势改的也是它，
+                // `ignoresSafeArea()` 挂的是里面那个 ZStack（要让书库、暗幕和阅读页都铺到边），
+                // 代价是外层这个 GeometryReader 报回来的是**安全区**的尺寸：探针实测这一种挂法
+                // 给 393×759，而把 `ignoresSafeArea()` 挂到 GeometryReader 上才给 393×852
+                // （`.probe/run-canvas-size.sh`，三种挂法 A=759 / B=852 / C=759）。
+                // 转场的几何必须用真正那块画布：`bookFrame` 在摊开那一步要正好等于整屏，
+                // 封面才盖得住底下的 93pt——少盖一截就是「书举到一半，底下一条书架还在」，
+                // 以及举起走完那一下正文从屏幕底下闪出来。
+                // 这里只做加法（安全区四条边补回去），不换挂法：换挂法会改到所有下层视图
+                // 收到的安全区，那是阅读页排版的事，不该为一趟动画去动它。
+                let insets = canvas.safeAreaInsets
+
+                let canvasSize = CGSize(
+                    width: canvas.size.width + insets.leading + insets.trailing,
+                    height: canvas.size.height + insets.top + insets.bottom
+                )
+
+                // 那一本书挪到哪一步：0 压在封面卡上，1 完全摊开成整屏。
+                // 底下那层书库、暗幕和 BookStage 里的书都按同一个值联动，下拉手势改的也是它，
                 // 所以三层永远同步，不会出现正文已经缩回去、书库还没复原。
                 let present = launcher.opened == nil
                     ? 0
@@ -79,27 +95,35 @@ struct ReaderApp: App {
 
                     if let target = launcher.opened {
 
-                        ReaderView(
-                            book: target.book,
-                            chapterDescriptor:
-                                target.book.chapters[target.chapterIndex],
-                            onClose: {
-                                launcher.close()
-                            }
-                        )
-                        // 换一本书必须换掉整个视图：ReaderView 的章是 init 里灌进
-                        // @State 的，复用实例会留着上一本书的那一章。
-                        .id(target.id)
-                        // 不用 .transition：那个只在插入/移除的两端之间插值，
-                        // 中途被手指按住就得整个重放。这里直接按 presentation 摆，
-                        // 下拉多少落在多少上，松手再决定走完还是弹回。
-                        .modifier(
-                            CoverMatch(
-                                progress: present,
-                                source: launcher.sourceFrame,
-                                canvas: canvas.size
+                        // 转场由 BookStage 这一层摆那一本正在挪的书，阅读页原样待在整屏上：
+                        // 它不再跟着 `presentation` 缩放、位移、淡出——缩的是书，不是页面。
+                        // 落点每次现读（`landingFrame(for:)` 的注释说了为什么不能缓存），
+                        // 拿不到就走回退落点，而不是让书飞向别的位置。
+                        BookStage(
+                            presentation: present,
+                            cover: BookCover(
+                                url: target.book.coverURL,
+                                title: target.book.title
+                            ),
+                            card: launcher.landingFrame(
+                                for: target.book.id
+                            ),
+                            canvas: canvasSize
+                        ) {
+                            ReaderView(
+                                book: target.book,
+                                chapterDescriptor:
+                                    target.book.chapters[
+                                        target.chapterIndex
+                                    ],
+                                onClose: {
+                                    launcher.close()
+                                }
                             )
-                        )
+                            // 换一本书必须换掉整个视图：ReaderView 的章是 init 里灌进
+                            // @State 的，复用实例会留着上一本书的那一章。
+                            .id(target.id)
+                        }
                     }
 
                     // 开屏压在全部内容之上：首帧那一下书库还是空的，
@@ -118,80 +142,4 @@ struct ReaderApp: App {
     private static let dockedCorner: CGFloat = 44
 
     private static let scrimOpacity: Double = 0.32
-}
-
-/// progress 1 = 铺满整屏，0 = 正好落在封面卡那块地方。
-///
-/// 只按宽度算缩放：卡是 2:3、整页是全屏，硬要把高也对上就得把整页压扁，
-/// 字会先挤成一团再弹回来。宽度对上、位置对上，看着就是那张卡被拿起来了。
-private struct CoverMatch: ViewModifier, Animatable {
-
-    var progress: Double
-
-    /// nil = 不知道那张卡在哪（比如从别处打开阅读页），退回等比缩放。
-    let source: CGRect?
-
-    let canvas: CGSize
-
-    var animatableData: Double {
-        get {
-            progress
-        }
-        set {
-            progress = newValue
-        }
-    }
-
-    /// 离全屏还有多远：1 在卡上，0 已经铺满。
-    private var rest: Double {
-        1 - progress
-    }
-
-    private var targetWidth: CGFloat {
-        guard let source, source.width > 1, canvas.width > 1 else {
-            return canvas.width * 0.86
-        }
-        return source.width
-    }
-
-    private var scale: CGFloat {
-        CGFloat(1 - rest * (1 - targetWidth / max(canvas.width, 1)))
-    }
-
-    private var center: CGPoint {
-        guard let source, source.width > 1 else {
-            return CGPoint(x: canvas.width / 2, y: canvas.height * 0.62)
-        }
-        return CGPoint(x: source.midX, y: source.midY)
-    }
-
-    /// 收到底之前把不透明度也拉到 0。
-    ///
-    /// 原来是 `0.35 + 0.65 * progress`，于是整页落到封面卡上时还留着 35% 的实影，
-    /// 而拆视图就发生在这一瞬 —— 表现是缩回去以后「啪」地闪一下没了。
-    /// 只在最后 15% 行程上加一道淡出，中间段和原来完全一致。
-    private var opacity: Double {
-        (0.35 + 0.65 * progress) * min(1, progress / 0.15)
-    }
-
-    func body(
-        content: Content
-    ) -> some View {
-
-        let offset = CGSize(
-            width: (center.x - canvas.width / 2) * CGFloat(rest),
-            height: (center.y - canvas.height / 2) * CGFloat(rest)
-        )
-
-        content
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: 26 * CGFloat(rest),
-                    style: .continuous
-                )
-            )
-            .scaleEffect(scale)
-            .offset(offset)
-            .opacity(opacity)
-    }
 }

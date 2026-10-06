@@ -6,7 +6,7 @@
 //
 //  路由口径（对齐图书 App）：书库点书 = 直接进这一页，中间不再插一层书籍详情；
 //  章节列表收在正文上唤出的「目录」里；朗读控制在正文下方那条坞里；
-//  单击按宽度分区——左右两条翻页，中间那块留给「点哪句从哪句朗读」。
+//  单击按宽度分区——左右两条翻页，中间那块是另一个操作：单击弹/收按钮，双击读那一句。
 //
 
 import SwiftUI
@@ -50,6 +50,9 @@ struct ReaderView: View {
 
     @State private var currentPage = 0
 
+    /// 全书每章几面纸（当前排版档）。边量边往外报，没量到的那一段底部写「…」。
+    @State private var bookPages: BookPageMap?
+
     /// 翻到章边界要接上相邻一章：这一位记下新章该落在哪一头，nil = 没排队。
     /// 手动翻页落在章首/章尾，跟着音频换章才落在正在播的那一句上。
     @State private var landingEdge: PageEdge?
@@ -89,27 +92,59 @@ struct ReaderView: View {
     /// 唤出后自动收回的计时。
     @State private var chromeExpiry: Task<Void, Never>?
 
-    /// 攒着还没起播的那一次点句朗读。第二下在窗口内到达就把它取消掉——
-    /// 那一下是双击，只该唤按钮。
+    /// 双击那一下排着的起播，还没到开口的那一拍（`schedulePlay`）。
+    /// 同一下点击要是被翻页带认走，就在这里作废——那一下只翻页。
     @State private var pendingPlay: Task<Void, Never>?
 
     /// 上一次点击什么时候落的。双击、以及同一层对同一下点击的重复上报都按它判。
+    /// 记的是这一下点击**头一路上报**的时刻：两路上报各记一次的话，第二路会把
+    /// 「这一颗什么时候落的」往后挪，快一点的双击就被算成同一颗了。
     @State private var lastTapAt = Date.distantPast
+
+    /// 还在攒 `tapWindow` 的那一次单击（弹/收按钮），还没起手。窗口内又来了一个就是双击，
+    /// 这一颗当场作废——双击不许顺手把按钮也弹开（「双击 ≠ 单击两次」）。
+    @State private var pendingChrome: Task<Void, Never>?
+
+    /// 同一下点击的两路上报，哪几路已经到了。
+    ///
+    /// 「这两条是同一下」只能按路判，不能按时间判：按时间判（早先就是），
+    /// 两下挨得比那个窗口近就整个被当成同一下的第二路——读者快点两下，
+    /// 第二下被吃掉，表现是「双击什么也没发生」。
+    @State private var tapPaths: Set<TapPath> = []
+
+    /// 这一下点击落在哪一句上。只有 link 那一路给得出（分区那一路只知道 x）。
+    ///
+    /// 两路谁先谁后不定，所以双击要读的落点在**开口那一刻**才取，不在判成双击那一刻取：
+    /// 判成双击常常是分区那一路先报的，它给不出落点，那时候取就永远是 nil。
+    @State private var tapPosition: Int?
+
+    /// 读者双击选中、但还没有声音在念的那一句（语音播报关着时的落点反馈）。
+    /// 亮一会儿自己收，见 `pick(_:)`。
+    @State private var pickedSentence: Int?
+
+    /// 上面那一句什么时候收。
+    @State private var pickedExpiry: Task<Void, Never>?
 
     /// 上一次左边缘那一划什么时候在动。边缘条上的点击和右滑挂在同一个视图上，
     /// 松手时两路都会报——不认这个，滑出去的那一下会被点击当成「翻一页」，
     /// 读者想关页面，结果纸先翻过去一张。
     @State private var lastSwipeAt = Date.distantPast
 
-    /// 算作「第二下」的间隔。比系统的双击窗口短一点：宁可慢半拍起播，
-    /// 也不要双击时把那一句读出来。
+    /// 两下算「同一个双击」的间隔，也是**单击要攒的那一拍**：第一下在这拍里不落手，
+    /// 过完这一拍才判成单击。SwiftUI 在这一层给不出两个独立的双击识别器（落点那一句是
+    /// run 上的 link 报的，整页分区是 `onTapGesture` 报的，两条路各报各的），只能自己攒。
+    /// 代价写明白：单击比手慢 0.25s 才动，换掉的是双击那一下多出来的按钮开合。
     private static let tapWindow: TimeInterval = 0.25
 
-    /// 同一下点击的两路上报（句子 run + 整页）之间最大的间隔。不并成一下，
-    /// 点一句正文就会被当成双击。
+    /// 同一下点击的两路上报（句子 run + 整页分区）之间最大的间隔。**只用来兜住时序**：
+    /// 判「是不是同一下」靠的是路（`tapPaths`），这一条只管「隔得太久的那一路不算同一下」。
+    /// 它同时也是起播等落点、以及等翻页认领的那一拍。
+    ///
+    /// 早先拿它当唯一判据（「隔得近就是同一下」），于是两下挨得比它近的双击整个被并成
+    /// 一下——第二下被吃掉，表现是「双击什么也没发生」。
     private static let tapEcho: TimeInterval = 0.06
 
-    /// 左右两条翻页带各占页宽的这一成，中间剩下的留给「点哪句从哪句朗读」。
+    /// 左右两条翻页带各占页宽的这一成，中间剩下的留给「单击弹按钮、双击读那一句」。
     /// 和拖动的临界位移取同一个数：两条路都往那个方向走，占地就该一样。
     private static let turnZoneRatio: Double = 0.22
 
@@ -141,6 +176,20 @@ struct ReaderView: View {
         case head
 
         case tail
+    }
+
+    /// 一下点击的两路上报。点在正文上时两路都会报，谁先谁后不定，
+    /// 所以「这两条是不是同一下」只能按路判（见 `tapPaths`）。
+    ///
+    /// `fileprivate` 而不是 `private`：`handleTap` 在扩展里，它那个 `private`
+    /// 和这里的 `private` 不是同一个作用域，编译器会判成「内部方法用了私有类型」。
+    fileprivate enum TapPath: String {
+
+        /// 句子 run 上的 link。只有它给得出「点到了哪一句」。
+        case link
+
+        /// 整页分区那一下（`onTapGesture`）。它只知道 x，分得出翻页带还是中部。
+        case zone
     }
 
     @AppStorage("fontSize")
@@ -299,6 +348,10 @@ struct ReaderView: View {
             chromeExpiry?.cancel()
             pendingPlay?.cancel()
             pendingPlay = nil
+            pendingChrome?.cancel()
+            pendingChrome = nil
+            pickedExpiry?.cancel()
+            pickedExpiry = nil
         }
         .sheet(
             isPresented: $showOutline
@@ -399,6 +452,9 @@ struct ReaderView: View {
         pendingPlay?.cancel()
         pendingPlay = nil
 
+        // 双击点亮的那一句也是上一章的，跟着收掉。
+        pick(nil)
+
         spine.reset()
 
         descriptor = target
@@ -490,19 +546,22 @@ private extension ReaderView {
             )
             .contentShape(Rectangle())
             // 单击按宽度分区：左右两条各 `turnZoneRatio` 翻页，中间照旧
-            // （点句朗读 + 双击唤按钮）。
+            // （单击弹/收按钮，双击读那一句）。
             //
             // 用「带位置的点击」而不是在两侧盖两条视图：那两条会压在文字上，
             // 落在两侧的句子从此读不到落点；而分区要的本来就是「这一下落在哪」，
             // 不是「这一下盖住了谁」。
-            // 没有字的那片地方也算一次点击：只用来接双击的第二下（见 `handleTap`）。
+            // 没有字的那片地方也算一次点击：单击照样弹/收按钮，第二下落在没字的地方
+            // 就只是「双击但不读句」（见 `handleTap`，那里 `position` 为 nil 只撤单击）。
             .onTapGesture(
                 count: 1,
                 coordinateSpace: .local
             ) { location in
                 handleZoneTap(
                     x: location.x,
-                    width: geometry.size.width
+                    y: location.y,
+                    width: geometry.size.width,
+                    height: geometry.size.height
                 )
             }
             // 这一句才是「整页都在翻」的关键：`ignoresSafeArea` 把里面那个 UIKit 翻页
@@ -562,18 +621,32 @@ private extension ReaderView {
         // 渲染用同一块地方，否则页尾会溢出去（分页算 40 行、实际只放得下 37 行）。
         // 减法只写在 `ReaderPageBox` 里：这里的 `size` 是整屏那份（外层 ignoresSafeArea），
         // 以前各写一遍，量到 763pt 而纸上只有 670pt，每页最后两行掉在纸外面。
-        let area = ReaderPageBox.bodyArea(size)
+        //
+        // 摊成两面时这里交的宽再对半切一次（`ReaderPaper.leaf`）：分页量的就是这一面，
+        // 而纸上那一面实测到的宽由 UIKit 分给它的 bounds 决定，两边是同一个数——
+        // 「量的排得下、纸上掉一行」就是这么来的，所以宽只在这一个地方减。
+        let paper = ReaderPaper(
+            size: size,
+            body: ReaderTypography.bodySize(
+                scale: fontScale
+            )
+        )
+
+        let area = paper.leaf
 
         let main = mainSheet(chapter)
 
         return CurlPageTurner(
+            // 中缝在纸正中（一次供两面）还是在左边缘（一次一面）。这是构造参数，
+            // 装好以后改不了，所以下面用 `.id` 在换档时把整个容器换掉。
+            isSpread: paper.isSpread,
             // 页序不一定从第 0 面开始：上一章的纸贴在正文前面时，正文第一面的下标是负的。
             startIndex: spine.startIndex(main: main),
             pageCount: spine.pageCount(main: main),
             // 换代才作废缓存：跨章不算换代（相邻那两段本来就在页序里，每个下标还是同一面纸）。
             revision: "v\(spine.generation)",
             // 纸上这一面的全部输入。翻页只是页码动，不该让缓存里那几页重排一遍。
-            contentRevision: pageContentKey(chapter, area),
+            contentRevision: pageContentKey(chapter, area, main: main),
             // 卷页的纸色跟着主题走：深色模式下翻起来那张纸也得是深色的。
             paper: theme.uiBackground,
             // 光给动态色不够，还得把 UIKit 那层的 traits 钉在同一档：
@@ -585,8 +658,18 @@ private extension ReaderView {
             }
         ) { pageIndex in
 
-            pageView(at: pageIndex, main: main)
+            pageView(
+                at: pageIndex,
+                main: main,
+                paper: paper
+            )
         }
+        // 换档 = 重建容器：`spineLocation` 是构造参数，`.min` 那台递两个控制器会直接抛异常。
+        // 换档本来就要按新的纸宽重新分页（`area` 跟着变，下面两条 task 的 key 也变），
+        // 所以重建对得上版式，不是代价。
+        .id(
+            paper.isSpread
+        )
         .task(id: layoutKey(chapter, area)) {
 
             rebuildLayout(chapter, size: area)
@@ -596,6 +679,42 @@ private extension ReaderView {
         .task(id: "prefetch|\(layoutKey(chapter, area))") {
 
             await prefetchNeighbors(area: area)
+        }
+        // 全书页数：底部那一行报的是「第 N 页 / 共 M 页」，N 是前面每一章的面数加这一面，
+        // M 是整本书的面数——所以每一章都得量一遍，成本见 `BookPagination` 顶部那笔账。
+        //
+        // 先让开两拍再开跑：点开一章 1s 内出正文和跨章预取都在同一颗 CPU 上排队，
+        // 这一趟不该插在它们前面。落盘复用，只有换排版档才重来。
+        //
+        // 读者位置之前的那些章一量完，`onProgress` 就把「第 N 页」交出来（每 8 章一次）；
+        // 「共 M 页」要整本量完才有准数，没准数的那一段写「共 … 页」。
+        // 中途挂一个会自己变大的总数，看着比没有总数更像算错了。
+        .task(id: "bookpages|\(pageMetrics(area))") {
+
+            let metrics = pageMetrics(area)
+
+            // 先垫落盘那一份：第二次打开同一本书不该再看到一次「量页中」。
+            bookPages = BookPagination.stored(
+                bookID: book.id,
+                metrics: metrics,
+                chapters: book.chapters.count
+            )
+
+            try? await Task.sleep(for: .seconds(2))
+
+            guard !Task.isCancelled else { return }
+
+            if let map = await BookPagination.measure(
+                bookID: book.id,
+                metrics: metrics,
+                descriptors: book.chapters,
+                area: area,
+                scale: fontScale,
+                lineScale: lineScale,
+                onProgress: { bookPages = $0 }
+            ) {
+                bookPages = map
+            }
         }
         .onChange(of: player.currentSentenceIndex) { _, newIndex in
 
@@ -619,20 +738,46 @@ private extension ReaderView {
     ///
     /// 相邻那一面不给跟读的绿字，也不认点击：那一句不在播放器手上，点它就是拿
     /// 另一章的句子号去起播——念出来的和点的不是同一句。
+    ///
+    /// 双页时 `index` 可能落在页序之外那一面（摊不满时补上的半张，见 `CurlPageTurner`
+    /// 口径 ④），那一张交白纸：它什么都不印，连页眉也不印——书里那张空白页上没有人写字。
     func pageView(
         at index: Int,
-        main: TurnSpine.Sheet
+        main: TurnSpine.Sheet,
+        paper: ReaderPaper
     ) -> ReaderPageView {
 
-        let found = spine.sheet(at: index, main: main)
+        // 中缝在这一面的哪条边：按下标奇偶定（偶数在左，它的内侧就是右边）。
+        // 单页时 nil，纸也就不画那道阴影。
+        let spineEdge: ReaderSpineEdge? = paper.isSpread
+            ? ((index & 1) == 0 ? .trailing : .leading)
+            : nil
 
-        let sheet = found?.sheet ?? main
-        let local = found?.local ?? 0
-        let isMain = found.map { $0.sheet.chapter.id == main.chapter.id } ?? true
+        guard let found = spine.sheet(at: index, main: main) else {
+            return ReaderPageView(
+                sentences: [],
+                slices: [],
+                bodySize: main.layout.bodySize,
+                lineScale: lineScale,
+                sideMargin: main.layout.sideMargin,
+                theme: theme,
+                chapterTitle: "",
+                activePosition: nil,
+                tap: { _ in },
+                runningHead: "",
+                headOpacity: 1,
+                blank: true,
+                spineEdge: spineEdge
+            )
+        }
 
-        /// 这一页摊几栏、每栏从哪儿起、每栏的行距挪多少。越界时它退回单栏 + 0，
-        /// 和下面 `slices` 那一句的「拿不到就交空页」是同一个兜底口径。
-        let spread = sheet.layout.columns(onPage: local)
+        let sheet = found.sheet
+        let local = found.local
+        let isMain = sheet.chapter.id == main.chapter.id
+
+        /// 这一页摊成几栏、每栏从哪儿起、每栏的行距挪多少。`columns(onPage:)` 越界时
+        /// 它退回单栏 + 0，和下面 `slices` 那一句的「拿不到就交空页」是同一个兜底口径。
+        let columns = sheet.layout.columns(onPage: local)
 
         return ReaderPageView(
             sentences: sheet.chapter.sentences,
@@ -641,13 +786,12 @@ private extension ReaderView {
                 : [],
             bodySize: sheet.layout.bodySize,
             lineScale: lineScale,
-            columnCuts: spread.cuts,
-            columnStretch: spread.stretch,
+            columnCuts: columns.cuts,
+            columnStretch: columns.stretch,
+            sideMargin: sheet.layout.sideMargin,
             theme: theme,
             chapterTitle: sheet.chapter.title,
-            activePosition: isMain && speechEnabled
-                ? player.currentSentenceIndex
-                : nil,
+            activePosition: isMain ? activeHighlight : nil,
             tap: { position in
                 // [Tap] 取证（#162）：点到了预取进来的相邻那一面——那一句不在播放器手上，
                 // 按口径就该丢掉，但得看得见是这一条丢的，别记到「派发」头上。
@@ -655,10 +799,13 @@ private extension ReaderView {
                     print("[Tap] 丢：落在相邻那一面的纸上 pos=\(position)")
                     return
                 }
-                handleTap(position)
+                handleTap(position, path: .link)
             },
             runningHead: sheet.descriptor.backLabel,
-            headOpacity: chromeShown ? 0 : 1
+            // 章名只在每一摊右边那面印（书里的规矩：章名在右页页眉，左页那一面是背面，
+            // 印了就是两面都有章名，看着像两本书并排放）。顶栏唤出来时两边一起淡掉。
+            headOpacity: chromeShown || spineEdge == .trailing ? 0 : 1,
+            spineEdge: spineEdge
         )
     }
 
@@ -732,72 +879,91 @@ private extension ReaderView {
         }
     }
 
-    /// 点正文。`position` = 点到的那一句，nil = 点到没有字的地方。
+    /// 点正文。`position` = 点到的那一句（只有 link 那一路给得出），`path` = 这一下是哪一路报的。
     ///
-    /// 起播和唤按钮都只从这一个口子走，所以「双击顺带把那句读了一遍」不可能再发生：
-    /// 第一下先攒 `tapWindow` 再起播，期间再来一下就是双击——把攒着的那次朗读作废，
-    /// 只唤按钮。代价是单击起播慢 0.25s，换来双击就是双击、单击就是单击。
+    /// **单击和双击是两个操作**，各办各的那一件：单击弹/收按钮，双击读落点那一句。
+    /// 分开靠攒一拍：第一下只记账不起手（`scheduleChrome`），`tapWindow` 内又来一下才判成
+    /// 双击，同时把那颗还没落地的单击撤掉——所以双击不会再顺手把按钮弹开一次。
+    /// 代价就一条：单击比手慢 `tapWindow` 才动。这是把「一下」和「两下」分开的唯一办法，
+    /// 之前让单击跟手，就得让双击那一下也吃一次「按钮已经弹开了」。
     ///
-    /// [Tap] 取证（#162）：同一下点击有两路上报（run 的 link 和外面的分区点击），
-    /// 落到哪个分支、两路隔了多少毫秒，只能从日志里读——「点了没反应」在屏幕上
-    /// 长得一模一样，分支不打分就分不出是派发丢了还是仲裁误判。
-    func handleTap(
-        _ position: Int?
+    /// **一下点击有两路上报**（点在正文上时 link 和分区各报一次），所以进来的头一件事
+    /// 是判「这是不是一下的第二路」：是就只补落点、不当成第二下。判据是路，不是时间
+    /// ——按时间判的话，两下挨得比 `tapEcho` 近就整个被并成一下，读者快点两下等于没点。
+    ///
+    /// [Tap] 取证（#162）：落到哪个分支、两路隔了多少毫秒，只能从日志里读——
+    /// 「点了没反应」在屏幕上长得一模一样，分支不打分就分不出是派发丢了还是仲裁误判。
+    fileprivate func handleTap(
+        _ position: Int?,
+        path: TapPath
     ) {
+
+        // 转场那一段不吃点击：举起那一半整页正文根本不画（`BookStageGeometry.readerVisible`），
+        // 点下去读到的是一页看不见的字，还会把 chrome 唤在一本悬在半空的书底下。
+        guard !launcher.isTransitioning else {
+            print("[Tap] 分支=转场中，不吃")
+            return
+        }
 
         let now = Date()
 
         let sinceLast = now.timeIntervalSince(lastTapAt)
 
-        lastTapAt = now
-
-        let gap = Int(sinceLast * 1000)
-
-        print("[Tap] 分支入口 pos=\(String(describing: position)) 距上次 \(gap)ms 有在飞的起播=\(pendingPlay != nil)")
-
         if now.timeIntervalSince(lastZoneTurnAt) < Self.tapEcho {
             // 这一下已经被翻页带认走了：同一下点击的两路上报，以翻页为准。
-            print("[Tap] 分支=已被翻页带走")
+            print("[Tap] 分支=已被翻页带走 路=\(path.rawValue)")
             return
         }
 
-        if sinceLast < Self.tapEcho {
-            // 同一下点击被两层各报了一次：以拿到句子的那次为准，不再另起一次。
-            print("[Tap] 分支=回声 \(gap)ms")
-            if let position, pendingPlay == nil {
-                schedulePlay(position)
+        if sinceLast < Self.tapEcho, !tapPaths.contains(path) {
+            // 同一下点击的另一路到了：补落点，不当成第二下。
+            tapPaths.insert(path)
+
+            if let position {
+                tapPosition = position
             }
+
+            print("[Tap] 并成一下 路=\(path.rawValue) 落点=\(String(describing: tapPosition))")
             return
         }
 
-        if pendingPlay != nil || sinceLast < Self.tapWindow {
-            print("[Tap] 分支=当作双击（取消在飞的起播）\(gap)ms")
-            pendingPlay?.cancel()
-            pendingPlay = nil
-            toggleChrome()
+        // 走到这里就是新的一颗。是单击还是双击，看它离上一颗多久。
+        let isDouble = sinceLast < Self.tapWindow
+
+        tapPaths = [path]
+        // 双击那颗不许把上一颗的落点抹成 nil。真机 1252 条 `[Tap]` 里「并成一下」0 次、
+        // 两路最小间隔 112ms（比 `tapEcho` 大近一倍）：一次点击只走一条路——点在字形上只报
+        // link，其余只报 zone。所以第二下落在行缝、页脚那片白时，落点只有第一那一份，
+        // 覆盖掉就成了「这一下没有落点」，双击就此静默作废。
+        tapPosition = isDouble ? position ?? tapPosition : position
+        lastTapAt = now
+
+        print(
+            "[Tap] 分支入口 路=\(path.rawValue) pos=\(String(describing: position))"
+                + " 距上次 \(Int(sinceLast * 1000))ms → \(isDouble ? "双击" : "单击")"
+                + " 有在飞的起播=\(pendingPlay != nil) 有在攒的单击=\(pendingChrome != nil)"
+        )
+
+        if isDouble {
+            pendingChrome?.cancel()
+
+            pendingChrome = nil
+
+            schedulePlay()
+
             return
         }
 
-        if let position {
-            schedulePlay(position)
-        } else {
-            print("[Tap] 分支=空处，什么都不做")
-        }
+        scheduleChrome()
     }
 
-    func schedulePlay(
-        _ position: Int
-    ) {
+    /// 单击那一件（弹/收按钮）：攒完 `tapWindow` 才落手，窗口内有第二下就是双击，
+    /// 这一颗由 `handleTap` 撤掉。
+    func scheduleChrome() {
 
-        // 播报关着：点句只是点句，不排那 0.25s 的起播。
-        guard speechEnabled else {
-            print("[Tap] 不起播：语音播报关着 pos=\(position)")
-            return
-        }
+        pendingChrome?.cancel()
 
-        print("[Tap] 排起播 pos=\(position)（\(Int(Self.tapWindow * 1000))ms 后才真开口）")
-
-        pendingPlay = Task { @MainActor in
+        pendingChrome = Task { @MainActor in
 
             try? await Task.sleep(
                 nanoseconds: UInt64(Self.tapWindow * 1_000_000_000)
@@ -805,7 +971,56 @@ private extension ReaderView {
 
             guard !Task.isCancelled else { return }
 
+            pendingChrome = nil
+
+            print("[Tap] 单击落手=弹/收按钮")
+
+            toggleChrome()
+        }
+    }
+
+    /// 双击读那一句。延后 `tapEcho` 才真开口，两个理由：①同一下点击也会被翻页带报一次，
+    /// 落在左右两条带里的那一下以翻页为准（`turnPage` 认走时会把这颗作废）；②落点可能
+    /// 还在路上——判成双击的常常是分区那一路（它只知道 x，给不出「点到了哪一句」），
+    /// link 那一路晚几毫秒才到。等完这一拍两路都齐了，所以落点在**开口那一刻**才取。
+    ///
+    /// 单击不排这里——那一件（弹/收按钮）攒的是自己的 `tapWindow`（`scheduleChrome`）。
+    /// 能走到这里说明窗口内落了第二下，双击只读句，那颗单击已经撤掉了。
+    func schedulePlay() {
+
+        // 播报关着：不出声，但双击得有一个看得见的回应——把那一句点亮一会儿。
+        // 什么都不给的话，读者分不出「点了没反应」和「反应本来就是无声的」。
+        guard speechEnabled else {
+            print("[Tap] 不起播：语音播报关着 落点=\(String(describing: tapPosition))")
+
+            pick(tapPosition)
+
+            return
+        }
+
+        print("[Tap] 排起播（\(Int(Self.tapEcho * 1000))ms 后才真开口）")
+
+        pendingPlay = Task { @MainActor in
+
+            try? await Task.sleep(
+                nanoseconds: UInt64(Self.tapEcho * 1_000_000_000)
+            )
+
+            guard !Task.isCancelled else { return }
+
             pendingPlay = nil
+
+            guard Date().timeIntervalSince(lastZoneTurnAt) >= Self.tapEcho else {
+                print("[Tap] 起播作废：这一下被翻页带走")
+                return
+            }
+
+            guard let position = tapPosition else {
+                // 点在没字的地方（段间那条白、版心之外）：没有哪一句可读，也没有哪一句
+                // 可亮。这一条必须打在日志里，否则和「派发丢了」在屏幕上是同一个样子。
+                print("[Tap] 不起播：这一下没有落点")
+                return
+            }
 
             // 这一句是人自己点的，页该重新跟着声音走了。
             followAudio = true
@@ -816,16 +1031,55 @@ private extension ReaderView {
         }
     }
 
-    /// 单击落在哪一区：左右两条翻页带各自翻页，中间还按老规矩走
-    /// （点句朗读、双击唤按钮）。
+    /// 把那一句点亮一会儿：语音播报关着时，双击只有这一份反馈。
+    ///
+    /// 用的是纸上「正在念的那一句」那套上色（其余压暗），所以它亮起来和真在念时
+    /// 一模一样，差别只在有没有声音。传 nil 就是当场收。
+    func pick(
+        _ position: Int?
+    ) {
+
+        pickedExpiry?.cancel()
+
+        pickedSentence = position
+
+        guard position != nil else { return }
+
+        pickedExpiry = Task { @MainActor in
+
+            try? await Task.sleep(
+                nanoseconds: 1_500_000_000
+            )
+
+            guard !Task.isCancelled else { return }
+
+            pickedExpiry = nil
+
+            pickedSentence = nil
+        }
+    }
+
+    /// 纸上该点亮哪一句。语音开着就是播放器念到的那一句；关着就是读者双击选中的那一句。
+    ///
+    /// 两处共用这一个说法：交下去的那一面（`pageView`）和纸面的内容口径
+    /// （`pageContentKey`）。各写一遍的话，改了这边忘了那边，缓存不失效——
+    /// 表现就是「点了不亮」。
+    var activeHighlight: Int? {
+        speechEnabled ? player.currentSentenceIndex : pickedSentence
+    }
+
+    /// 单击落在哪一区：左右两条翻页带各自翻页，中间剩下的走
+    /// `handleTap`（单击弹按钮、双击读那一句）。
     ///
     /// 按页宽的比例算而不是定死点数——小屏大屏都要是「拇指一伸就够到的边」。
     /// 最外面那 30pt 由边缘条盖着（`edgeStripWidth`），那一路也报成翻页，
     /// 所以落点分到哪儿都是翻一页；两层各报一次同一下点击由 `lastZoneTurnAt` 去重。
-    /// 唤按钮不再从边缘来，改走正文中部双击（`handleTap`）。
+    /// 弹按钮、读那一句都不从边缘来，走正文中部（`handleTap`）。
     func handleZoneTap(
         x: CGFloat,
-        width: CGFloat
+        y: CGFloat,
+        width: CGFloat,
+        height: CGFloat
     ) {
 
         guard width > 0 else { return }
@@ -833,14 +1087,16 @@ private extension ReaderView {
         let band = width * Self.turnZoneRatio
 
         // [Tap] 取证（#162）：分区这一路拿到的是哪条带、落点离边多远。
-        print("[Tap] 路=zone x=\(String(format: "%.0f", x)) 带宽=\(String(format: "%.0f", band)) 屏宽=\(String(format: "%.0f", width))")
+        // 纵坐标是 #196 补的：中部那些点击只报 zone、从不报 link（所以没有落点），
+        // 只有把 y 一起记下来，才分得出「点在行缝/页脚那片白」和「link 那一路压根没报」。
+        print("[Tap] 路=zone x=\(String(format: "%.0f", x)) y=\(String(format: "%.0f", y)) 带宽=\(String(format: "%.0f", band)) 屏宽=\(String(format: "%.0f", width)) 纸高=\(String(format: "%.0f", height))")
 
         if x < band {
             turnPage(forward: false)
         } else if x > width - band {
             turnPage(forward: true)
         } else {
-            handleTap(nil)
+            handleTap(nil, path: .zone)
         }
     }
 
@@ -848,6 +1104,10 @@ private extension ReaderView {
     func turnPage(
         forward: Bool
     ) {
+
+        // 书还在半空（放大或收拢）时不翻纸：转场那一段正文只是被封面盖着，
+        // 这时候翻过去，落定第一眼就是「已经翻了一页」，而且和系统卷页抢同一张纸。
+        guard !launcher.isTransitioning else { return }
 
         let now = Date()
 
@@ -859,15 +1119,30 @@ private extension ReaderView {
 
         lastZoneTurnAt = now
 
-        // 落在两侧的字上时，那一句话的朗读已经由 run 的 link 攒下了（两路上报的
-        // 先后不一定）。同一下点击不能既翻页又在 0.25s 后开口读一句。
+        // 双击读句时，那一颗只延后 `tapEcho` 在等翻页认领（两路上报的先后不一定）。
+        // 同一下点击落在两条带里就以翻页为准，不能又翻页又开口读那一句。
         if pendingPlay != nil,
            now.timeIntervalSince(lastTapAt) < Self.tapEcho {
             pendingPlay?.cancel()
             pendingPlay = nil
         }
 
-        let target = forward ? clampedPage + 1 : clampedPage - 1
+        // 同一下点击也可能会先把「弹按钮」攒在 `tapWindow` 里（run 的 link 报得比分区早）：
+        // 这一下归翻页了，那颗就不该再落手，不然点边翻页会顺手把按钮弹开。
+        if pendingChrome != nil,
+           now.timeIntervalSince(lastTapAt) < Self.tapEcho {
+            pendingChrome?.cancel()
+            pendingChrome = nil
+        }
+
+        // 双页时一翻是一摊（两面），单页一翻一面。步长只从 `paper` 问，不在这儿写死：
+        // 走一面的话落点还在原来那一摊里，容器比的是摊，一看「纸已经在这摊上」就什么也不演，
+        // 表现是「点了没反应」。
+        let step = paper.leafStep
+
+        let target = forward
+            ? clampedPage + step
+            : clampedPage - step
 
         if layout.pages.indices.contains(target) {
 
@@ -881,6 +1156,11 @@ private extension ReaderView {
 
         // 章边界。相邻那一章的纸已经摊在页序里（预取赶上了）的话，这一下和章内翻页
         // 在容器眼里是同一件事：往前走一面，卷页照演。
+        //
+        // 双页时这一步可能落在「本章之外但同一摊里」：本章末面是偶数那一面时，
+        // 它和下一章的第一面本来就并排摊着，读者已经看见了下一章的开头。那一下只换正文
+        // （`cross` 交过去的落点还是这一摊，纸不动），下一次点才真往前走一摊——
+        // 和真书里「跨过一章的接缝」是同一件事。
         let landing = spine.neighbor(forward: forward).map { sheet in
             forward ? sheet.base : sheet.base + sheet.layout.pageCount - 1
         }
@@ -906,6 +1186,10 @@ private extension ReaderView {
     /// 上一章的纸上，读者在前、声音在后 → 跟着；往后翻回上一章的最后一页，声音从
     /// 下一章开头念起，读者在后 → 不跟。声音那一章压根不在页序里（中间那些纸还没摊开）
     /// 才比不出高低，跟随留着，等声音进了这一段再按上面的规矩走。
+    /// 章内翻页那一步走多远、落点报哪一面，双页时都按「摊」算（见 `spreadFloor`）：
+    /// 纸上是左右两面，读者这一摊的头一面和声音那一面哪个在前，比的得是同一个单位。
+    /// 按面的下标比的话，声音正念到这一摊的右面（下标比纸的头一面大 1）会被判成
+    /// 「读者翻到了声音前面」，跟读当场解掉——表现是「页就在声音那一摊上，之后再也不跟」。
     func noteManualTurn(
         to landed: Int
     ) {
@@ -922,7 +1206,7 @@ private extension ReaderView {
             return
         }
 
-        followAudio = landed >= audio
+        followAudio = spreadFloor(landed) >= spreadFloor(audio)
     }
 
     /// 容器那一头的下标是整份页序的，这里这一头还是「本章第几页」：胶水在这根 Binding 上。
@@ -954,6 +1238,53 @@ private extension ReaderView {
     /// 眼前这一页收在本章的页数里。
     var clampedPage: Int {
         min(max(currentPage, 0), max(layout.pageCount - 1, 0))
+    }
+
+    /// 这一屏的纸摊成几面。和 `pageReader` 里那一份同一个判据（只看纸宽），
+    /// 只是尺寸取布局回调记下的 `pageSize`：那是同一个 ZStack 的量，
+    /// `readerContent` 的 GeometryReader 就在它里面，两处不可能给出两个结论。
+    ///
+    /// 翻页的步长、页码折到哪一面都问它，所以这三处绝不会和纸上那一摊错开。
+    var paper: ReaderPaper {
+        ReaderPaper(
+            size: pageSize,
+            body: ReaderTypography.bodySize(
+                scale: fontScale
+            )
+        )
+    }
+
+    /// 把页序里的某一面折到它那一摊的头一面（单页时原样退回）。
+    ///
+    /// 比「谁在前谁在后」的时候必须先折：双页时声音推进到同一摊的右边那面（下标 +1、
+    /// 摊没变），按面的下标比就成了「声音跑到读者前面去了」，跟读的锁白解一次。
+    func spreadFloor(
+        _ space: Int
+    ) -> Int {
+        paper.isSpread ? space & ~1 : space
+    }
+
+    /// 把「本章第几页」折回它那一摊的头一面（单页时原样退回）。
+    ///
+    /// 为什么要折：双页时纸上一摊是两面，报左边那面还是右边那面必须有个说法，不然同一个
+    /// 摊会因为「这一下是声音推进来的」还是「读者点出来的」报出两个数。容器那头已经统一
+    /// 交回摊的头一面（`anchored`），这里让视图自己挑页码时也走同一个口径。
+    ///
+    /// 折的是页码，不是纸：`CurlPageTurner` 比的是摊（`unit(of:)`），折之前折之后供的是
+    /// 同两面。折出来的面下标可能比本章第一面还靠前（这一摊的左面是上一章的末面），
+    /// 那就落在本章第一面上——读者看见的正是「本章第 1 页在右边那面」。
+    func spreadAnchor(
+        _ local: Int
+    ) -> Int {
+
+        guard paper.isSpread else { return local }
+
+        return max(
+            0,
+            spreadFloor(
+                spine.mainBase + local
+            ) - spine.mainBase
+        )
     }
 
     /// 落点不在正文那一段里就换章。方向一看下标就知道：比正文的头还前，或者比尾还后。
@@ -1014,14 +1345,22 @@ private extension ReaderView {
         pendingPlay?.cancel()
         pendingPlay = nil
 
+        // 双击点亮的那一句也是上一章的，跟着收掉。
+        pick(nil)
+
         descriptor = sheet.descriptor
         chapter = sheet.chapter
         layout = sheet.layout
         layoutHeldFor = sheet.key
         layoutChapterID = sheet.chapter.id
-        currentPage = min(
-            max(page, 0),
-            max(sheet.layout.pageCount - 1, 0)
+        currentPage = spreadAnchor(
+            min(
+                max(page, 0),
+                max(
+                    sheet.layout.pageCount - 1,
+                    0
+                )
+            )
         )
         openToken += 1
     }
@@ -1031,9 +1370,34 @@ private extension ReaderView {
         // 落点不给在这儿调：这一行的高就是 `ReaderPageBox.textBottom` 扣出来的那一段，
         // 两边都取 `PageNumberBar`，改了行高分页和纸面跟着一起动。
         PageNumberBar(
-            text: "\(min(currentPage + 1, layout.pageCount)) / \(layout.pageCount)",
+            text: pageLabel,
             color: theme.text.opacity(0.35)
         )
+    }
+
+    /// 底部那一行写什么：**只有书籍口径**。
+    ///
+    /// 「第 N 页 / 共 M 页」，N = 前面每一章的面数 + 这一面，M = 整本书的面数。
+    /// 本章的 `x / n` 不再出现在这一行：`layout.pageCount` 只是这一章的面数，
+    /// 拿它当整本书的页数，读者以为整本书只剩三页。
+    ///
+    /// 数还数不出来的地方写成「…」而不是退回本章页数：读者要的是全书的位置，
+    /// 一个还没数完的全书数比一个不是全书的数好认。
+    var pageLabel: String {
+
+        guard
+            let map = bookPages,
+            let index = book.chapters.firstIndex(where: { $0.id == descriptor.id }),
+            let before = map.pages(before: index)
+        else { return "全书量页中…" }
+
+        let current = before + clampedPage + 1
+
+        guard let total = map.total, total > 0 else {
+            return "第 \(current) 页 / 共 … 页"
+        }
+
+        return " \(min(current, total))  /  \(total) "
     }
 
     /// 分页输入。角色名**不在**里面：纸上不显示说话人，名字只给语音用，
@@ -1062,16 +1426,23 @@ private extension ReaderView {
     /// 少了其中任何一项，`CurlPageTurner` 就会在该重画的时候不重画：
     /// 漏了 `activePosition`，跟读的那一行绿字停在原地不动；漏了 chrome 那一项，
     /// 页眉该让位的时候没让。反过来，只写页码不动它就不重排，点两侧翻页才不卡。
+    ///
+    /// 最后那一段是页序的范围（起点 × 面数），只有双页才要：两头那半张补位白纸是照
+    /// 这个范围造的，预取把范围往前推一档，那个下标当场就有字了。不记进来的话，
+    /// 缓存里那张白纸会一直白着——表现是「翻到下一章，左边那一面还是空的」。
+    /// 单页时容器从来不会问区间外的下标，这一段变了也只是多重画一次，不出白页。
     func pageContentKey(
         _ chapter: Chapter,
-        _ size: CGSize
+        _ size: CGSize,
+        main: TurnSpine.Sheet
     ) -> String {
 
-        let active = speechEnabled ? player.currentSentenceIndex : -1
+        let active = activeHighlight ?? -1
 
         return """
         \(layoutKey(chapter, size))|\(layoutEpoch)|\(chapter.title)|\(descriptor.backLabel)\
-        |\(themeRaw)|\(active)|\(chromeShown ? 0 : 1)
+        |\(themeRaw)|\(active)|\(chromeShown ? 0 : 1)\
+        |\(spine.startIndex(main: main))x\(spine.pageCount(main: main))
         """
     }
 
@@ -1094,7 +1465,28 @@ private extension ReaderView {
             chapterTitle: chapter.title
         )
 
+        // 同一把尺的自检：底部「第 N 页」按 `bookPages` 里这一章的面数排，纸上按 `next` 排。
+        // 两边同输入同函数，对不上就是「落库那份」和「EPUB 现读那份」的字漂了——
+        // 读者的页码会在跨章那一下跳一格。这里只记不改：先在真书上量到它会不会发生。
+        if
+            let map = bookPages,
+            let at = book.chapters.firstIndex(where: { $0.id == descriptor.id }),
+            map.counts.indices.contains(at),
+            map.counts[at] != next.pageCount {
+            print("[Pages] 本章对不上：纸上 \(next.pageCount) 面，全书表 \(map.counts[at]) 面（第 \(at + 1) 章「\(descriptor.title.prefix(12))」）")
+        }
+
         let isNewChapter = layoutChapterID != chapter.id
+
+        // 纸上第一句：同一章重排（转屏、单双页换档、改字号行距）以后靠它找回位置。
+        // 必须在换掉 `layout` 之前取——旧的这一版才是读者眼前那两面纸。
+        let heldSentence = isNewChapter
+            ? nil
+            : layout.pages
+                .indices
+                .contains(clampedPage)
+                ? layout.pages[clampedPage].first?.position
+                : nil
 
         // 只在真变了的时候升一位：每次重排都升，跟读时那些「章没变、只是又算了一遍」
         // 的更新会把整窗口缓存页重画一遍，白卡。
@@ -1119,14 +1511,29 @@ private extension ReaderView {
 
         // 换章：手动翻过来的那一下落在章首/章尾，其余情况跟到正在播的那句
         // （打开时就是上次读到的那句）。
+        //
+        // 同一章重排不再夹页码数字：纸宽一变（转屏、从单页摊成双页）同一个下标印的就是
+        // 另一段字，只夹上界会把读者从正在看的那一段上拽走——表现是「转个屏，页跳回章头
+        // 附近」。留住纸上第一句，位置才是跟着字走的。
         if let edge = landingEdge {
             landingEdge = nil
             currentPage = edge == .head ? 0 : max(next.pageCount - 1, 0)
         } else if isNewChapter {
-            currentPage = next.page(containing: player.currentSentenceIndex)
+            currentPage = next.page(
+                containing: player.currentSentenceIndex
+            )
         } else {
-            currentPage = min(currentPage, next.pageCount - 1)
+            currentPage = next.page(
+                containing: heldSentence ?? player.currentSentenceIndex
+            )
         }
+
+        // 双页时把落点折到它那一摊的头一面，页码才只有一个说法（见 `spreadAnchor`）；
+        // 单页原样退回。三条分支都折：上面交出来的都是「哪一面纸」，而摊的头一面才是
+        // 页码的口径，纸本身不动（容器比的是摊）。
+        currentPage = spreadAnchor(
+            currentPage
+        )
     }
 
     /// 正文刚换了一章、而这一章的纸还没重排（`openCurrentChapter` 交过来的那一份）。
@@ -1175,11 +1582,19 @@ private extension ReaderView {
             return
         }
 
-        let target = layout.page(containing: newIndex)
+        let target = spreadAnchor(
+            layout.page(
+                containing: newIndex
+            )
+        )
 
         // 只朝声音跨过去的方向走，一格也不往回拽：读者往前翻过一页时声音还在后面，
         // 把页拉回去就是「怎么翻都翻不动」。声音追上来的那一格 `target == shown`，
         // 本来就不必看；再往前一格，跟随自然接上（见 `noteManualTurn`）。
+        //
+        // 双页时这个「一格」是一摊：`spreadAnchor` 已经把落点折到摊的头一面，
+        // 声音在同一摊的两面之间推进（下标 +1、摊没变）折出来还是同一个数，这里就拦住了，
+        // 纸不会在原地自己卷一趟。
         guard target > clampedPage else {
             return
         }
@@ -1202,6 +1617,8 @@ private extension ReaderView {
         VStack(spacing: 0) {
 
             ReaderTopBar(
+                chapterLabel: descriptor.backLabel,
+                pagesLeft: layout.pageCount - clampedPage - 1,
                 onClose: onClose,
                 onOutline: { showOutline = true },
                 onTypography: {
@@ -1249,7 +1666,7 @@ private extension ReaderView {
     ///
     /// 左右两条通高的带子现在只负责翻页：它们是 `turnZoneRatio` 那两条翻页带最外面的一段。
     /// 以前点这里是唤出按钮，于是翻页带最靠屏幕边的 30pt 被抢走——「点右侧翻页没反应」
-    /// 就是点在这一段上（拇指落点天然贴着边）。唤按钮还有一条路：正文中部双击（`handleTap`）。
+    /// 就是点在这一段上（拇指落点天然贴着边）。唤按钮走正文中部单击（`handleTap`）。
     ///
     /// 状态栏和 home 指示条那两段不给这两条用——那上面没有按钮，也不该一点就弹东西；
     /// 只有下滑那条手势从屏幕最上沿起手，因为它要的就是「从顶上拉下来」这个动作。
@@ -1306,7 +1723,7 @@ private extension ReaderView {
     }
 
     /// 左边缘那条额外挂右滑返回。用 simultaneousGesture 而不是 gesture：这条只认横向占优的
-    /// 位移，竖着的和轻点一下都还要留给原来那几个手势（翻页、点句朗读、下拉关闭）。
+    /// 位移，竖着的和轻点一下都还要留给原来那几个手势（翻页、弹按钮/读句、下拉关闭）。
     private var leftEdgeStrip: some View {
 
         edgeStrip(forward: false)
@@ -1421,6 +1838,13 @@ private extension ReaderView {
         travel: CGFloat,
         distance: CGFloat
     ) {
+
+        // 转场还在飞的时候不接受下拉：那时 `presentation` 正被开/关那条动画写着，
+        // 这里再逐帧插一手就是两路打架（书在半空抖）。更要紧的是 `pullTravel`——
+        // 它一旦涨起来，松手就会调 `close`，而那趟可能正在**打开**。
+        // 判据用 `phase` 而不是 `isTransitioning`：下拉进行中 presentation 本来就 < 1，
+        // 按后者会拖到一半把自己拦住。
+        guard launcher.phase == .shown else { return }
 
         let progress = min(
             1,

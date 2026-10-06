@@ -8,13 +8,20 @@
 import SwiftUI
 import ImageIO
 
-/// 封面图。EPUB 里的封面经常是打印稿尺寸，直接解码一张就是二十几兆内存，
-/// 所以走 ImageIO 按显示尺寸的 3 倍缩略图解，结果按路径缓存。
-struct CoverImage: View {
+/// 封面那一面：图按比例铺满给定的框、裁掉多出来的，圆角和那道 0.5pt 边都在这儿收。
+///
+/// 书库的卡、目录头上那张小图、以及进出场那本**正在挪的**书共用这一个视图，理由只有一条：
+/// 书落回架子那一刻，转场副本和真封面卡画的是同一张图才叫「交接」——裁法、圆角、那道边
+/// 任一样对不上，落点那一瞬就是重影（表现是「缩回去以后卡边上多出一圈」）。
+///
+/// 从不拉伸：只有 fill + 裁。框不合比例时变的是**露出来那一块**，不是把字压扁。
+struct CoverFace: View {
 
     let url: URL?
 
     let title: String
+
+    var corner: CGFloat = 12
 
     var body: some View {
 
@@ -53,9 +60,28 @@ struct CoverImage: View {
             )
             .clipped()
         }
-        .aspectRatio(2.0 / 3.0, contentMode: .fit)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: corner,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: corner,
+                style: .continuous
+            )
+            .strokeBorder(
+                .quaternary,
+                lineWidth: 0.5
+            )
+        }
     }
 
+    /// EPUB 里的封面经常是打印稿尺寸，直接解码一张就是二十几兆内存，
+    /// 所以走 ImageIO 按 720px 缩略图解，结果按路径缓存。
+    /// 转场那本书要的是「立刻有图、不许闪」，靠的就是这份缓存：卡上已经解过一遍的图，
+    /// 副本这一份是命中，不再解第二次。
     private static let cache = NSCache<NSString, UIImage>()
 
     private static let maxPixelSize: CGFloat = 720
@@ -101,6 +127,29 @@ struct CoverImage: View {
     }
 }
 
+/// 2:3 那一档：书库的封面卡和目录头上的小图。
+///
+/// 转场那本书不吃这层——它那一面要从 2:3 的卡长到整屏，比例本来就一路在变
+/// （见 `BookStageGeometry`），钉死比例就飞不出去。
+struct CoverImage: View {
+
+    let url: URL?
+
+    let title: String
+
+    var corner: CGFloat = 12
+
+    var body: some View {
+
+        CoverFace(
+            url: url,
+            title: title,
+            corner: corner
+        )
+        .aspectRatio(2.0 / 3.0, contentMode: .fit)
+    }
+}
+
 /// 书库里的一张书卡：只有封面和进度（对齐图书 App）。
 struct BookCoverTile: View {
 
@@ -117,20 +166,6 @@ struct BookCoverTile: View {
                 url: book.coverURL,
                 title: book.title
             )
-            .clipShape(
-                RoundedRectangle(
-                    cornerRadius: 12
-                )
-            )
-            .overlay {
-                RoundedRectangle(
-                    cornerRadius: 12
-                )
-                .strokeBorder(
-                    .quaternary,
-                    lineWidth: 0.5
-                )
-            }
             .shadow(
                 color: .black.opacity(0.18),
                 radius: 6,
@@ -258,12 +293,10 @@ struct ChapterOutlineView: View {
 
             CoverImage(
                 url: book.coverURL,
-                title: book.title
+                title: book.title,
+                corner: 8
             )
             .frame(width: 62, height: 87)
-            .clipShape(
-                RoundedRectangle(cornerRadius: 8)
-            )
 
             VStack(alignment: .leading, spacing: 5) {
 

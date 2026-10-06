@@ -57,4 +57,19 @@ enum TTSEngineType: String, CaseIterable, Sendable {
     /// 所以「进后台要不要停掉语音合成」由它决定：Edge 走网络、Kokoro 走 CPU 都能继续，
     /// 只有 Qwen3-TTS（MLX）必须停。
     var submitsToGPU: Bool { self == .qwen3 }
+
+    /// 这句音频当初由**哪个后端**合成——从落盘路径反推，不新增字段。
+    ///
+    /// 「谁出的声」本来就是声音身份的一部分（`voiceID` 三个后端共用同一套名字，但它们翻译
+    /// 出来的嗓门完全不同：Uncle_Fu 在 Edge 是 YunyangNeural，在 Kokoro 是 zm_098），
+    /// 而缓存键只有书/章/句，所以这一层信息只剩在 `{书}/{章}/` 下面那个子目录名里。
+    /// 不这样也查不回来：`recordedVoiceID` 存的是名字，降级那几句记的同样是那个人。
+    ///
+    /// - Note: 认不出来（路径不是这两层形状）就返回 nil，调用方按「不知道」放过，别删。
+    static func backend(ofAudioAt url: URL) -> TTSEngineType? {
+        let parent = url.deletingLastPathComponent().lastPathComponent
+        if let match = allCases.first(where: { $0.audioNamespace == parent }) { return match }
+        // Qwen3 是老平铺形状：句子直接住在以 chapterID 命名的目录里，没有子目录这一层。
+        return UUID(uuidString: parent) != nil ? .qwen3 : nil
+    }
 }

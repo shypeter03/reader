@@ -71,6 +71,20 @@ final class PlayerManager: ObservableObject {
 
     private var endObserver: NSObjectProtocol?
 
+    /// AVPlayer「还在不在走」和手上那个 item「读不读得出来」。
+    ///
+    /// 这两样不盯，「后台莫名暂停」就没有成因可找：系统可以在我们一条 `pause()` 都没走
+    /// 的情况下把播放掐掉（会话被别的 App 抢走、内存压力、item 废了），而 `isPlaying`
+    /// 是自己写的 true，于是屏幕上在播、锁屏上在播、耳朵里什么都没有。
+    /// 等音频的那一段也没有心跳可问，只能靠 KVO 这一路自己醒。
+    private var controlStatusObservation: NSKeyValueObservation?
+
+    private var itemStatusObservation: NSKeyValueObservation?
+
+    /// 上一次自愈是什么时候。KVO 只在值变化时来，本来不循环，但「会话抢不回来」那种
+    /// 情形会一路「给了 rate 又被弹回 paused」，别让它把日志刷满。
+    private var lastStallHealAt = Date.distantPast
+
     /// 用户是否处于「想播放」状态（用于流式：音频就绪后自动续播）
     private var wantsToPlay = false
 
@@ -128,7 +142,8 @@ final class PlayerManager: ObservableObject {
     /// 原来只在 `init()` 里 `setActive(true)` 一次，那一刻什么都还没放：别的 App 正占着
     /// 音频时这一步会失败，而失败之后再也没有第二次。类别（`.playback`）确实还在，前台
     /// 照样出声，于是这个洞只有熄屏才露出来——系统放行一个 App 在后台出声，看的是它
-    /// **持有**一个激活的播放会话。所以在每次新建播放器/从中断里回来时补一次。
+    /// **持有**一个激活的播放会话。所以每一次要给播放器 rate 之前都补一次（新建和复用
+    /// 两条分支都算），中断回来、KVO 抢回播放时也各补一次。
     private func ensureSessionActive() {
         let session = AVAudioSession.sharedInstance()
         do {
@@ -192,16 +207,30 @@ final class PlayerManager: ObservableObject {
 
         switch type {
         case .began:
-            guard isPlaying else { return }
-            // 会话被抢走时播放器其实已经停了，这里只把状态对齐、并记住「中断前在放」。
-            pausedBySystemInterruption = wantsToPlay
+            // 认「还想不想听」，不认「这一刻在不在出声」：等音频的那一段 `isPlaying` 是
+            // false，可人确实还在听这一本。按 `isPlaying` 判就漏记这一次，而漏记的代价是
+            // 中断结束时既不抢会话也不续播——「熄屏时来了一条提示音，之后朗读再没响过」。
+            guard wantsToPlay else { return }
+            // 会话被抢走时播放器其实已经停了，这里只把状态对齐、并记住「中断前在听」。
+            pausedBySystemInterruption = true
             isPlaying = false
             nowPlaying.setRate(0)
             updateAudioHold()
-            print("[Session] 被系统中断 → 暂停（中断结束后\(pausedBySystemInterruption ? "自动续播" : "本就没在放")）")
+            print("[Session] 被系统中断 → 暂停（中断结束后自动续播）")
 
         case .ended:
-            guard pausedBySystemInterruption else { return }
+            // 先把会话抢回来，再谈要不要续播。被系统拿走之后不 `setActive(true)`，
+            // 后面每一次给 rate 都是空转：不报错、也不出声，而 `isPlaying` 还会被写成 true。
+            // 这一步和「中断前在不在放」无关——没在放也要还回来，否则下一次起播同样哑掉。
+            ensureSessionActive()
+
+            guard pausedBySystemInterruption else {
+                // 中断前本就没在听（或 `.began` 那一路没记上）：只把保活重新结算一次，
+                // 顶话的那路静音也在被抢走时死掉了，得有人把它救回来。
+                updateAudioHold()
+                return
+            }
+
             pausedBySystemInterruption = false
             let options = AVAudioSession.InterruptionOptions(
                 rawValue: note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
@@ -209,7 +238,6 @@ final class PlayerManager: ObservableObject {
             let shouldResume = options.contains(.shouldResume)
             print("[Session] 中断结束（shouldResume=\(shouldResume)）→ \(shouldResume ? "续播" : "停在这里")")
             if shouldResume {
-                ensureSessionActive()
                 play()
             } else {
                 wantsToPlay = false
@@ -222,6 +250,11 @@ final class PlayerManager: ObservableObject {
     }
 
     private func handleRouteChange(_ note: Notification) {
+        // 输出设备一变，顶话的那一路静音也可能跟着掉（它走的也是这一条音频会话）。
+        // 先重新结算保活，再判要不要停：不先补的话，「等音频 + 断了蓝牙耳机」那一段
+        // 就没人再调 `updateAudioHold`，进程就此能被冻住。
+        updateAudioHold()
+
         guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
               reason == .oldDeviceUnavailable,
@@ -582,12 +615,26 @@ final class PlayerManager: ObservableObject {
             speechEnabled,
             !sentences.isEmpty
         else {
+            print("[Card] 不按播放：\(speechEnabled ? "手上没有正文（还没装配到章）" : "「语音播报」关着") 句=\(currentSentenceIndex) 句数=\(sentences.count)")
             return
         }
 
         wantsToPlay = true
 
+        // 把锚点挪回这一句。卡片上按下播放的那一句常常正是「还没音频」的那一句（等合成
+        // 期间被中断或被冻过），而排产只认最近报过一次的位置：不补报就是「按了播放，
+        // 然后等一句永远不来的音频」。和开回语音播报、跳章走的是同一条路。
+        let index = currentSentenceIndex
+        Task { await self.reportPosition(index) }
+
         if player == nil {
+            playCurrentSentence()
+            return
+        }
+
+        // 播放器上手上的那句和指针那句不是同一句（等音频的那一段把 item 摘掉了）：
+        // 这里直接给 rate 只会「按了没声却显示在播」，按指针那句重走一遍起播。
+        if player?.currentItem == nil {
             playCurrentSentence()
             return
         }
@@ -599,6 +646,12 @@ final class PlayerManager: ObservableObject {
 
         nowPlaying.setRate(playbackRate)
         updateAudioHold()
+        // 「手上」是播放器当前那个 item 的音频文件名：按了播放却没声时，这一行说明它
+        // 到底在给哪一句的 rate（`AVPlayerItem` 不露 URL，要经 asset 取）。
+        let held = (player?.currentItem?.asset as? AVURLAsset)?
+            .url
+            .lastPathComponent ?? "无 item"
+        print("[Card] 播放 句=\(index) 手上=\(held)")
     }
 
     // MARK: - Pause
@@ -616,6 +669,8 @@ final class PlayerManager: ObservableObject {
 
         nowPlaying.setRate(0)
         updateAudioHold()
+
+        print("[Card] 暂停 句=\(currentSentenceIndex)")
 
         reportListeningStopped()
     }
@@ -642,6 +697,11 @@ final class PlayerManager: ObservableObject {
 
     func stop() {
 
+        // 先摘「想播」，再停播放器：`player.pause()` 会当场把一条 `timeControlStatus`
+        // 变化丢进主线程队列（KVO 自愈那条路），留着 true 就是「关了语音还响一句」，
+        // 而后台里它还会让静音保活一直顶着（`updateAudioHold` 只认这个值）。
+        wantsToPlay = false
+
         player?.pause()
 
         if let timeObserver, let player {
@@ -653,6 +713,14 @@ final class PlayerManager: ObservableObject {
             NotificationCenter.default.removeObserver(endObserver)
         }
         endObserver = nil
+
+        // 观测挂在 player/item 上：这一层把播放器整个放下，观测也就没人接了，
+        // 留着下一次起播前会被旧对象叫起来（认不出那是哪一句）。
+        controlStatusObservation?.invalidate()
+        controlStatusObservation = nil
+
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
 
         player = nil
 
@@ -749,6 +817,12 @@ final class PlayerManager: ObservableObject {
         }
     }
 
+    /// 用户挑了这一句要听（正文上双击的落点）。三件事按顺序办：
+    /// ①当场把正在放的那一句收声；②把这个位置报给调度器——音频还没合成的那一句，
+    /// 「加载」就只有这一条路（排产窗口按这个锚点往前挪，见 `promote`/`prime`）；③自动起播。
+    ///
+    /// 为什么要专门报位置：`onAudioStarted` 只在真出声那一刻走，而这一句恰恰可能正等着合成；
+    /// 不报的话锚点还留在旧那句上，用户点的那一句要等前面一路念完才排到。
     func playSentence(at index: Int) {
 
         guard
@@ -761,6 +835,9 @@ final class PlayerManager: ObservableObject {
         wantsToPlay = true
 
         currentSentenceIndex = index
+
+        Task { await self.reportPosition(index) }
+
         playCurrentSentence()
     }
 
@@ -819,25 +896,28 @@ private extension PlayerManager {
             print("[Voice] 句\(currentSentenceIndex) \(sentence.type.rawValue)/\(sentence.speaker.rawValue) 名=\(sentence.characterName ?? "-") 录=\(sentence.recordedVoiceID ?? "旧口径") 该=\(VoiceResolution.resolve(sentence: sentence, chapter: chapter, bookID: book.id)) 出=\(backend == chapter.id.uuidString ? "平铺" : (backend ?? "无音频")) 「\(String(sentence.text.prefix(12)))」")
         }
 
-        guard
-            let url = sentence.audioURL
-        else {
+        // 「记录说有音频」和「磁盘上真有那个文件」是两件事：音频存在 Caches 里，系统缺盘
+        // 时会自己收走，#181 那类重录也是先删文件再排产，而句子表上那份 `audioURL` 还留着。
+        // 把这样的 URL 挂上 AVPlayer，item 只会停在 `.failed`：不出声，也永远等不到
+        // 「放到末尾」，播放头就此钉在这一句上。所以先认盘，再认记录。
+        let url = sentence.audioURL.flatMap {
+            FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
+        }
 
-            // 合成/分析已失败的句子不会再出现音频，直接跳过，
-            // 不让播放停在永远等不到的句子上
-            if sentence.audioStatus == .failed || sentence.analysisStatus == .failed {
-                if currentSentenceIndex < sentences.count - 1 {
-                    currentSentenceIndex += 1
-                    playCurrentSentence()
-                } else {
-                    isPlaying = false
-                    progress = 1
-                    // 这一章再也没有声音了：别再顶着「想播」，否则保活静音会一直挂着，
-                    // 而卡片也停在一个永远等不到的位置上。
-                    wantsToPlay = false
-                    nowPlaying.setRate(0)
-                    updateAudioHold()
-                }
+        guard let url else {
+
+            // 到这儿就是「这一句放不出来」，两种成因：合成/分析已判失败（不会再有音频），
+            // 和记录上留着 `audioURL` 而磁盘上文件已不在（上面那次 `fileExists` 认出来的）。
+            // 两种都只能跳过——等下去是死路：`scheduleTTS` 只排「记录上没有音频」的句子，
+            // 那份记录要等下次开章的 `purgeReclaimedAudio` 才会被改回待合成。
+            if sentence.audioStatus == .failed
+                || sentence.analysisStatus == .failed
+                || sentence.audioURL != nil {
+
+                skipUnplayableSentence(
+                    sentence.audioURL.map { "记录说有音频、文件不在（\($0.lastPathComponent)）" }
+                        ?? "audio=\(sentence.audioStatus) analysis=\(sentence.analysisStatus) 都判失败"
+                )
                 return
             }
 
@@ -853,7 +933,21 @@ private extension PlayerManager {
 
             awaitingAudio = true
 
+            // 指针已经挪到这一句，可它的音频还没来：手上那一句旧音频必须当场收声，而且
+            // 要从播放器上**摘掉**。只把 `isPlaying` 写成 false 是假的——AVPlayer 还在放
+            // 上一句，而它放完会走 `handleSentenceFinished` 把播放头推到 i+1，用户点的那
+            // 一句就此被跳过去（表现就是「点了没反应，声音接着念别的」）。摘掉之后既不响，
+            // 也不会自己往前跑；音频到达时 `updateSentences` 那条续播会再回到这里起播。
+            if let player, player.currentItem != nil {
+                player.pause()
+                player.replaceCurrentItem(with: nil)
+            }
+
             isPlaying = false
+
+            currentTime = 0
+
+            progress = 0
 
             // 等音频的这一段是熄屏后最容易死的地方：没有音频在出声，iOS 就把 App 冻结，
             // 于是网络/本地合成一起停，等的东西永远等不到。这里就是为了让它别停。
@@ -875,6 +969,12 @@ private extension PlayerManager {
 
         progress = 0
 
+        // 每一次真正要给播放器 rate 之前都要确认会话是激活的，**两条分支都要**：
+        // 原来只有「新建播放器」那一条补这一步，而等音频的那一段恰恰是把 item 摘掉、
+        // 实例留着——续播时走的是复用那条支，会话要是被谁抢走过，这一步就漏了，
+        // 结果是 `isPlaying` 写成 true、屏幕上在播、耳朵里什么都没有。
+        ensureSessionActive()
+
         if let existingPlayer = player {
             if let observer = timeObserver {
                 existingPlayer.removeTimeObserver(observer)
@@ -883,9 +983,6 @@ private extension PlayerManager {
             existingPlayer.replaceCurrentItem(with: item)
         } else {
             player = AVPlayer(playerItem: item)
-            // 新建播放器 = 一次真正的起播（首次、换章、从中断回来都算）：
-            // 会话必须在这一刻是激活的，熄屏后系统才认你在出声。
-            ensureSessionActive()
         }
 
         guard let player else { return }
@@ -897,6 +994,8 @@ private extension PlayerManager {
         observeEnd(item: item)
 
         addTimeObserver(player: player)
+
+        watchPlayback(player: player, item: item)
 
         isPlaying = true
 
@@ -951,6 +1050,115 @@ private extension PlayerManager {
                     }
                 }
             }
+    }
+
+    /// 挂上「播放器还在不在走」和「这个 item 读不读得出来」两路观测。
+    ///
+    /// 为什么非 KVO 不可：后台里最常见的那几种停，一条 `pause()` 都不经过我们——会话被
+    /// 抢走又还回来、系统直接把播放掐了、item 废了。这些既不发通知也不抛错，只有这两个
+    /// 值会变。不盯着就只能等下一次心跳，而「等音频」那一段压根没有心跳可等。
+    func watchPlayback(player: AVPlayer, item: AVPlayerItem) {
+
+        controlStatusObservation?.invalidate()
+        controlStatusObservation = player.observe(
+            \.timeControlStatus,
+            options: [.new]
+        ) { [weak self] player, _ in
+            Task { @MainActor in
+                self?.handleControlStatus(player)
+            }
+        }
+
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = item.observe(
+            \.status,
+            options: [.new]
+        ) { [weak self] item, _ in
+            Task { @MainActor in
+                self?.handleItemStatus(item)
+            }
+        }
+    }
+
+    private func handleControlStatus(
+        _ player: AVPlayer
+    ) {
+        // 只认「用户没按停，可它不走了」这一种。等音频（`awaitingAudio`）那一段是我们
+        // 自己把 item 摘掉的，被系统中断掐着的那种有 `.ended` 负责接回来。
+        //
+        // `player === self.player` 这一条不能省：KVO 的回调是丢进主线程队列再执行的，
+        // 而 `stop()` 里那句 `player?.pause()` 正好会发一次。这条迟到一回，就会在
+        // 已经换上的新播放器之外，把已经丢掉的旧实例再 `rate = 1` 一次——两路声音叠着放。
+        guard player.timeControlStatus == .paused,
+              player === self.player,
+              wantsToPlay,
+              !awaitingAudio,
+              !pausedBySystemInterruption,
+              player.currentItem != nil
+        else { return }
+
+        // 这一句正好播完、`handleSentenceFinished` 还在路上：那是正常交接，不是被掐。
+        if let item = player.currentItem,
+           item.duration.seconds > 0,
+           item.currentTime().seconds >= item.duration.seconds - 0.05 {
+            return
+        }
+
+        let now = Date()
+        guard now.timeIntervalSince(lastStallHealAt) >= 1 else { return }
+        lastStallHealAt = now
+
+        print("[Stall] 播放器被停下（不是用户按的）句\(currentSentenceIndex) → 抢回会话、按指针那句续播")
+
+        ensureSessionActive()
+        player.rate = Float(playbackRate)
+    }
+
+    private func handleItemStatus(
+        _ item: AVPlayerItem
+    ) {
+        // 只处理还挂在播放器上的那一个：换句之后旧 item 的回调也该作废。
+        guard item.status == .failed, item === player?.currentItem else { return }
+
+        skipUnplayableSentence(
+            "item 读不出来：\(item.error?.localizedDescription ?? "无错误信息")"
+        )
+    }
+
+    /// 这一句放不出来：把播放头挪到下一句，别钉死在这儿。
+    ///
+    /// 为什么不等：`scheduleTTS` 只排「记录上没有音频」的句子，所以只要那份记录不改，
+    /// 这一句在本章内永远不会重录——等下去就是把朗读停在一句放不出来的句子上，
+    /// 用户看到的正是「放着放着莫名停了」。少听一句是明亏，停死是暗亏。
+    private func skipUnplayableSentence(
+        _ reason: String
+    ) {
+        print("[Stall] 句\(currentSentenceIndex)/\(sentences.count) 放不出来（\(reason)）→ 跳过这一句，下次开章会重录")
+
+        // 手上那个废 item 必须摘掉：留着下一次 `play()` 会以为「有 item」而只给 rate，
+        // 等于又去放同一句放不出来的音频。
+        player?.pause()
+        player?.replaceCurrentItem(with: nil)
+
+        awaitingAudio = false
+        awaitingSince = nil
+
+        if currentSentenceIndex < sentences.count - 1 {
+            currentSentenceIndex += 1
+            // 下一句大概率同样放不出来（系统整章收走缓存时，几千句会连着都是这个样子）：
+            // 就地递归会把主线程调用栈吃穿，这里换成一次任务切换，把这条链摊平成队列。
+            Task { @MainActor in
+                self.playCurrentSentence()
+            }
+        } else {
+            isPlaying = false
+            progress = 1
+            // 这一章再也没有能放的了：别再顶着「想播」，否则保活静音会一直挂着，
+            // 而卡片也停在一个永远等不到的位置上。
+            wantsToPlay = false
+            nowPlaying.setRate(0)
+            updateAudioHold()
+        }
     }
 
     func observeEnd(item: AVPlayerItem) {

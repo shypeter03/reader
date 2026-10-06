@@ -94,23 +94,32 @@ final class NowPlayingController {
 
         // 命令回调不保证跑在主队列，而播放状态全在 @MainActor 上：闭包只回 `.success`
         // （卡片据此把按钮点亮），真正的动作丢回主线程做。
+        //
+        // 每一颗都先落一条收执（`[NowPlaying] 按下=`）：「锁屏按了没反应」有两种完全不同的
+        // 成因——系统根本没把命令送进来（没有这条），和送进来了但播放器拒了（有这条、
+        // 却等不到 `[Card]`）。不打这一行，现场只能凭猜。
         center.playCommand.addTarget { [weak self] _ in
+            Self.pressed("play")
             Task { @MainActor in self?.commands?.play() }
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
+            Self.pressed("pause")
             Task { @MainActor in self?.commands?.pause() }
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Self.pressed("toggle")
             Task { @MainActor in self?.commands?.toggle() }
             return .success
         }
         center.nextTrackCommand.addTarget { [weak self] _ in
+            Self.pressed("next")
             Task { @MainActor in self?.commands?.jumpChapter(1) }
             return .success
         }
         center.previousTrackCommand.addTarget { [weak self] _ in
+            Self.pressed("prev")
             Task { @MainActor in self?.commands?.jumpChapter(-1) }
             return .success
         }
@@ -121,10 +130,12 @@ final class NowPlayingController {
         center.skipForwardCommand.preferredIntervals = [interval]
         center.skipBackwardCommand.preferredIntervals = [interval]
         center.skipForwardCommand.addTarget { [weak self] _ in
+            Self.pressed("skip+15")
             Task { @MainActor in self?.commands?.skip(Self.skipInterval) }
             return .success
         }
         center.skipBackwardCommand.addTarget { [weak self] _ in
+            Self.pressed("skip-15")
             Task { @MainActor in self?.commands?.skip(-Self.skipInterval) }
             return .success
         }
@@ -135,11 +146,21 @@ final class NowPlayingController {
             }
             // 位置先在当下取出来：event 是外部对象，不该被带进另一个线程。
             let seconds = event.positionTime
+            Self.pressed("seek", String(format: "%.1fs", seconds))
             Task { @MainActor in self?.commands?.seek(seconds) }
             return .success
         }
 
         print("[NowPlaying] 锁屏卡片已接管：曲目=章，进度=本章，跳过=±\(Int(Self.skipInterval))s")
+    }
+
+    /// 按下收执。`nonisolated`：命令回调跑在系统线程上，这条日志要的就是「那一刻到了」，
+    /// 丢回主线程排队的反而可能排在动作后面。
+    nonisolated private static func pressed(
+        _ name: String,
+        _ detail: String = ""
+    ) {
+        print("[NowPlaying] 按下=\(name)" + (detail.isEmpty ? "" : " \(detail)"))
     }
 
     // MARK: - 卡片内容

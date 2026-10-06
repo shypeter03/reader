@@ -57,8 +57,10 @@ enum ReaderBlock {
     /// 代价是相邻两行字距之差最大 2.6pt（21.5pt 字号），仍在「看不出这行密那行散」里。
     ///
     /// 补不动的两类，加多少上限都没用，别指望靠调这个数解决：
-    /// ① 含「“「（」的行：一旦给 `.kern`，TextKit 关掉整行的中文标点压缩，行宽立刻跳出 14~33pt
-    ///    （实测同一行 `0.00→316.9 0.01→350.1`），「折半重试」那道闸会拦住，纸上的洞留着。
+    /// ① 含「“「（」那类会压缩的标点的行：一旦给标点补 `.kern`，TextKit 关掉整行的中文标点
+    ///    压缩，行宽立刻跳出 14~33pt（实测同一行 `0.00→316.9 0.01→350.1`），「折半重试」
+    ///    那道闸会拦住。这一类现在有一条活路：整行补不进就换「只补汉字缝」再试一次
+    ///    （见 `lineBreaks` 那两种补法），标点那几缝保持紧凑，洞由汉字缝分摊。
     /// ② 洞本来就比整行余量大的短行（段末、章题）：约束 ① 直接不补。
     ///
     /// 洞比上限大就**不硬拉**，余量留在行尾。注意「少排一个字提前换行」治不了这个洞——
@@ -340,39 +342,99 @@ enum ReaderBlock {
             let deficit = target - ink
             guard deficit > 0 else { continue }
 
-            var value = min(deficit / CGFloat(gaps), perGapCap)
+            // 补法有两种，先试匀的、被闸门否掉再试挑的：
+            //   ① 整行每一缝都补——字间距最匀，绝大多数行走到这里就结了；
+            //   ② 只补「汉字–汉字」那几缝，标点两侧一律不碰。
+            // 为什么要留 ② 这一手：`.kern` 一压到标点，排版器就不再把那个标点压成半格，
+            // 一行里三个标点能吐出十几 pt，于是 ① 被判成两行、整行一个字距都不补，纸上
+            // 就是整整一格的洞（真机截图：绍宋 第二十章「啊?!”郑亿年眼见着自己兄长依然还」
+            // 行尾空 20.0pt，同一页其余满行只差 0.7~3.3pt）。② 根本不去碰标点，压缩照旧，
+            // 洞改由汉字缝分摊——缝少了、每格摊到的多，比 ① 更容易补不满，但补一半也胜过
+            // 整行放弃。两种补法都过同一道回炉闸：落纸仍只占一行才要。
             var chosen: CGFloat = 0
+            var hanOnly = false
 
-            // 补完要回炉按落纸行验一次：这一行在真版心里仍只占一行才要，占两行就折半重来；
-            // 三次都不行这行干脆不补。折半而不是换算法——洞的八成来自禁则，补多少都是补，
-            // 补不进总比补出一片对不上的行强。
-            for _ in 0..<3 {
-                guard value > 0.05 else { break }
+            for attempt in 0..<2 {
 
-                let rows = self.stretchedLineRects(
-                    of: letters,
-                    owners: owners,
-                    runs: runs,
-                    body: body,
-                    width: width,
-                    start: line.start,
-                    end: line.end,
-                    kern: value
-                )
+                let selective = attempt == 1
 
-                if rows.count == 1 {
-                    chosen = value
-                    break
+                let usable = selective
+                    ? (line.start..<line.end - 1).filter {
+                        Self.takesStretchGap(of: letters, at: $0)
+                    }.count
+                    : gaps
+
+                guard usable >= 1 else { continue }
+
+                var value = min(deficit / CGFloat(usable), perGapCap)
+
+                // 折半而不是换算法——洞的八成来自禁则，补多少都是补，
+                // 补不进总比补出一片对不上的行强。
+                for _ in 0..<3 {
+                    guard value > 0.05 else { break }
+
+                    let rows = self.stretchedLineRects(
+                        of: letters,
+                        owners: owners,
+                        runs: runs,
+                        body: body,
+                        width: width,
+                        start: line.start,
+                        end: line.end,
+                        kern: value,
+                        hanOnly: selective
+                    )
+
+                    if rows.count == 1 {
+                        chosen = value
+                        hanOnly = selective
+                        break
+                    }
+
+                    value /= 2
                 }
 
-                value /= 2
+                if chosen > 0 { break }
             }
 
             guard chosen > 0 else { continue }
 
-            for position in line.start..<line.end - 1 {
+            for position in line.start..<line.end - 1
+            where !hanOnly || Self.takesStretchGap(of: letters, at: position) {
                 stretch[position] = chosen
             }
+        }
+    }
+
+    /// 「只补汉字缝」那种补法里，第 `position` 个字和它后面那个字之间算不算一道缝。
+    ///
+    /// 要两端都是汉字：标点沾了 `.kern` 就不再被压成半格（见 `lineBreaks` 里那两种补法），
+    /// 而拉丁词、数字中间补字距等于把一个词劈成两截。渲染端和闸门都问这一个函数，
+    /// 两边不许各判一遍。
+    static func takesStretchGap(
+        of letters: [Swift.Character],
+        at position: Int
+    ) -> Bool {
+
+        guard position + 1 < letters.count else { return false }
+
+        return isHan(letters[position]) && isHan(letters[position + 1])
+    }
+
+    /// 汉字本体。标点（含全角形式、CJK 标点区）和空白都不算。
+    private static func isHan(_ character: Swift.Character) -> Bool {
+
+        let scalars = character.unicodeScalars
+
+        guard scalars.count == 1, let scalar = scalars.first else { return false }
+
+        switch scalar.value {
+        case 0x3400...0x4DBF,  // 扩展 A
+            0x4E00...0x9FFF,   // 基本汉字
+            0xF900...0xFAFF:   // 兼容汉字
+            return true
+        default:
+            return false
         }
     }
 
@@ -394,7 +456,8 @@ enum ReaderBlock {
         width: CGFloat,
         start: Int,
         end: Int,
-        kern: CGFloat
+        kern: CGFloat,
+        hanOnly: Bool = false
     ) -> [(width: CGFloat, height: CGFloat)] {
         lineRects(
             stretchedLineString(
@@ -404,13 +467,16 @@ enum ReaderBlock {
                 body: body,
                 start: start,
                 end: end,
-                kern: kern
+                kern: kern,
+                hanOnly: hanOnly
             ),
             width: width
         )
     }
 
-    /// 把一行字按它各自 run 的字体拼成串，`[start, end - 1)` 统一补 `kern`。
+    /// 把一行字按它各自 run 的字体拼成串，`[start, end - 1)` 统一补 `kern`；
+    /// `hanOnly` 就只补「汉字–汉字」那几缝（判据和 `lineBreaks` 用的是同一个
+    /// `takesStretchGap`，两边各判一遍就等于两种补法）。
     /// 单独开出来给探针用：取证要「这一行补了字距长什么样」，不许再拼一条自己的。
     static func stretchedLineString(
         of letters: [Swift.Character],
@@ -419,7 +485,8 @@ enum ReaderBlock {
         body: CGFloat,
         start: Int,
         end: Int,
-        kern: CGFloat
+        kern: CGFloat,
+        hanOnly: Bool = false
     ) -> NSMutableAttributedString {
 
         let string = NSMutableAttributedString()
@@ -427,7 +494,9 @@ enum ReaderBlock {
         // 行末那个字不补（补了它就在行尾多出一格空气）；`kern` 为 0 时整行都不加属性，
         // 免得一记 `.kern: 0` 把标点压缩判成「非默认排版」而悄悄改掉行宽。
         func wantsKern(_ position: Int) -> Bool {
-            position < end - 1 && kern > 0
+            position < end - 1
+                && kern > 0
+                && (!hanOnly || Self.takesStretchGap(of: letters, at: position))
         }
 
         var index = start
@@ -862,6 +931,68 @@ enum ReaderBlock {
                 + ReaderTypography.renderGuard,
             rows.count
         )
+    }
+
+    /// 一个中文字在 `body` 这一档上真正占多宽——排版引擎自己量的推进。
+    ///
+    /// 它是「一个字」唯一的尺（#168 拿它收窄版心），而**字号不是**：iOS 26.5 实测
+    /// （这里量 20 个「书」均摊，容器给到不可能折行的宽，走的就是断行那同一个排版器）——
+    ///
+    /// | 字号 | 一个字 | 占字面 |
+    /// |---|---|---|
+    /// | 15.2 | 15.08 | 0.992 |
+    /// | 19.0 | 18.83 | 0.991 |
+    /// | 22.8 | 21.71 | 0.952 |
+    /// | 28.5 | 27.11 | 0.951 |
+    ///
+    /// 20pt 以上排版器换了一档字距（`metrics` 里行框高被截成 1em 是同一档），按 1em 去抽
+    /// 会在最大字档每行多砍掉五分之一格——「每行少一个字」就成了「少一个多」。
+    ///
+    /// 也不拿 `NSString.size(withAttributes:)` 当尺：它按整串求和，行尾标点的半格压缩会让
+    /// 同一个字给出两个数（孤「。」19pt 量到 9.59，它在 20 字串里是 12.56）。
+    ///
+    /// 每次问都现量，还是记忆化——这一条改过口径，改它的只有双页门槛（#169）：
+    ///
+    /// 从前只有分页端问它，一次分页问一遍，几十微秒，缓存就是拿一个静态换这点钱，不划算。
+    /// 现在视图那一头每刷一遍都要问一次（摊不摊得开两面得按这一档的字宽判），
+    /// 主线程渲染路径上一遍一遍地跑排版器才是真不划算。所以这里记忆化，
+    /// 并且带锁：分页跑在 `Task.detached` 上、渲染跑在主线程，两个线程会同时问。
+    /// 键只有字号，Aa 面板那几档，条数封顶个位数。
+    private static let letterWidthLock = NSLock()
+
+    private static var letterWidths: [CGFloat: CGFloat] = [:]
+
+    static func letterWidth(body: CGFloat) -> CGFloat {
+
+        letterWidthLock.lock()
+        defer { letterWidthLock.unlock() }
+
+        if let hit = letterWidths[body] {
+            return hit
+        }
+
+        let measured = measureLetterWidth(body: body)
+
+        letterWidths[body] = measured
+
+        return measured
+    }
+
+    private static func measureLetterWidth(body: CGFloat) -> CGFloat {
+
+        let sample = String(repeating: "书", count: 20)
+
+        let rows = lineRects(
+            NSAttributedString(
+                string: sample,
+                attributes: [.font: UIFont.systemFont(ofSize: body)]
+            ),
+            width: 100_000
+        )
+
+        guard let row = rows.first, row.width > 0 else { return body }
+
+        return row.width / CGFloat(sample.count)
     }
 
     /// 这串字在 `width` 宽的纸面上断成了哪几行（每行的用宽与行框高）。

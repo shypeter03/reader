@@ -98,7 +98,12 @@ enum DialogueAttribution {
     /// 「王林愣」记一笔「被人当人称呼过」，于是三字残渣也进得了档案（说≥2 且被称呼≥1），
     /// 跟真名各钉一把嗓：同一个人的台词一句男声、一句旁白。
     /// 档案池变了，``personName(in:knownNames:)`` 那条放宽认出来的说话人跟着变，老章节重认一遍。
-    static let annotationVersion = 10
+    /// 11：放宽那一步的**开口闸门**换用了判开口的表（``relaxationAnchors``），不再拿抽名字的
+    /// ``speechVerbs`` 卡它。绍宋 120 章实测：「叙述里点了人名却没认出说话人」的 123 句里，
+    /// 「笑对/相对」「出言」「应声」「失笑」「一叹」这几类占二十多句——它们的叙述部分一个
+    /// `speechVerbs` 的字都没有，却被「这句确实有人开口」那道闸门放行了，卡住它们的正是这张
+    /// 用错地方的窄表。改的是**这句是谁说的**，老章节重认一遍。
+    static let annotationVersion = 11
 
     static let minNameLength = 2
     static let maxNameLength = 4
@@ -107,6 +112,22 @@ enum DialogueAttribution {
     private static let speechVerbs: Set<String.Element> = [
         "道", "说", "问", "答", "喊", "叫", "喝", "骂", "吼", "讲",
     ]
+
+    /// 放宽那一步（档案里有人 → 按绑定位认人）问的是**「叙述里有没有开口的痕迹」**，
+    /// 所以它该用「判开口」那张表（``utteranceAnchors``），不是「抽名字」那张
+    /// （``speechVerbs``）。两张表用途不同、容错方向相反，本文件自己写着（见
+    /// ``utteranceAnchors`` 的注释），而这一道闸门从前用的是后者——于是把真台词整批挡在
+    /// 放宽外面：绍宋 120 章实测「点了人名却没认出来」的 123 句里，光「笑对/相对」「出言」
+    /// 「应声」「失笑」「一叹」这几类就占二十多句，它们的叙述部分一个 `speechVerbs` 的字都没有。
+    ///
+    /// 在 ``utteranceAnchors`` 之上再补四个**只用来判开口**的字：对（相对/笑对/应对）、
+    /// 言（出言/直言/有言）、询（相询/动询）、曰、云。
+    ///
+    /// 故意**不收 口/头/首/声**：它们单摆在叙述里是名词（门口、石头、回头、手指），
+    /// 进这张表会放行一堆「有人做了个动作」而非「有人说了话」的句子；而那几步判据剩下的
+    /// 唯一防线就是「同句还有个档案里的人当主语」，不该拿它赌。
+    private static let relaxationAnchors: Set<String.Element> = DialogueAttribution
+        .utteranceAnchors.union(["对", "言", "询", "曰", "云"])
 
     /// 名字**后面**、动词**前面**的方式状语与衔接词。从尾部反复剥，剥到不中为止。
     /// 长的写在前头：「不紧不慢」要整块剥，不能被「慢」抢先把尾巴切一半。
@@ -642,8 +663,11 @@ enum DialogueAttribution {
         let candidates = knownNames.filter { heads.contains($0.first!) }
         guard !candidates.isEmpty else { return nil }
         let masked = Array(maskDialogue(text))
-        // 叙述部分里没有提示动词，就只是「引号 + 一段提到某人的叙述」，那种句子不该猜。
-        guard masked.contains(where: { speechVerbs.contains($0) }) else { return nil }
+        // 叙述部分里没有开口的痕迹，就只是「引号 + 一段提到某人的叙述」，那种句子不该猜。
+        // 看的是 ``relaxationAnchors``（判开口那张）而不是 ``speechVerbs``（抽名字那张）：
+        // 这一步只问「有没有人说了话」，名字是后面按绑定位挑的，拿窄表在这儿卡会把
+        // 「笑对/相对/出言/应声/失笑」那一整批真台词挡在放宽外面。
+        guard masked.contains(where: { relaxationAnchors.contains($0) }) else { return nil }
         var best: (position: Int, name: String)?
         for name in candidates {
             guard let position = firstBindingPosition(masked, name: name) else { continue }

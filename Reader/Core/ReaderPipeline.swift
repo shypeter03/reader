@@ -31,8 +31,11 @@ actor EnhancementJobStore {
         // 逐句 TTS 任务相反，一律丢弃重排：留着 worker 会被上次会话留下的别的书的
         // 后台音频占满——单 worker 不能打断在跑的任务，一句被内存压力拖到几十秒时，
         // 用户这一章就在队尾等好几分钟，看起来就是「点开没声音」。
+        // `.completed` 的也一起丢：那是「留存完成记录」那个年代留下的账（听一句一条，
+        // 一本千章的书能攒 20 万条 / 92MB），现在的口径是做完就销（见 `complete`）。
+        // 音频在正文里记着 audioURL，丢了记录不会让任何一句重做。
         var droppedTTS = 0
-        for (key, job) in jobs where job.type == .ttsSentence && (job.state == .pending || job.state == .failed) {
+        for (key, job) in jobs where job.type == .ttsSentence {
             jobs[key] = nil; droppedTTS += 1
         }
         // 收敛旧账：在「一次排完整本」那个年代排出来的上万个批次，一个 worker 一晚上
@@ -85,7 +88,25 @@ actor EnhancementJobStore {
     /// 合成不了的长句会在每次进出章节时再烧掉几十秒 GPU，永远出不来声音——失败必须
     /// 会停下来。名字以前带 TTS，其实解析批次一样走这条闸。
     static let maxAutoRetries = 3
+    /// 逐句任务的键：一处定义，排产和点查必须算出同一个字符串。
+    static func ttsKey(bookID: UUID, chapterID: UUID, sentenceIndex: Int) -> String {
+        "tts:\(bookID.uuidString):\(chapterID.uuidString):\(sentenceIndex)"
+    }
     func update(_ job: EnhancementJob) { jobs[job.id] = job; markDirty() }
+    /// 任务收尾。逐句 TTS 做完就把记录**销掉**，不留在账上：
+    ///
+    /// 那句的音频已经在正文里记着 `audioURL`，排产看正文就知道它不用再做，这条记录
+    /// 没有读者；而它每出一句长一条，实测一本 204 句的书听到 100 章就是 2 万条 /
+    /// 9.2MB JSON，去抖落盘每次都要整表重编码（146ms），冷启再整表解一遍。
+    /// 「音频被系统回收后要重排」也不靠它——句子退回 `audioURL == nil` 时，
+    /// 排产看不见旧记录，正好当新建一条（原来 `reopenTTS` 就是把销掉的记录改回
+    /// pending，那是给留存自己擦屁股的补丁）。
+    /// 解析批次相反，`.completed` 必须留：`analyzedChapters` 就靠它认「这章做过了」，
+    /// 省掉整本书为这一个判断去解落库正文。
+    func complete(_ job: EnhancementJob) {
+        if job.type == .ttsSentence { jobs[job.id] = nil } else { jobs[job.id] = job }
+        markDirty()
+    }
     /// `upsertAll` 的账面：光报「排了 N 个」看不出这 N 个里有几个本来就挂在队列里。
     struct UpsertReport {
         /// 真正要入队的（新建 + pending 抬优先级 + 失败捞回）
@@ -165,15 +186,6 @@ actor EnhancementJobStore {
         if dropped > 0 { markDirty() }
         return dropped
     }
-    /// 重录：某句音频作废（LLM 改了参数）。已完成的 TTS 任务必须退回 pending，
-    /// 否则 upsert 认定它做过，这一句从此静音。
-    func reopenTTS(chapterID: UUID, sentenceIndex: Int) {
-        var changed = false
-        for (key, job) in jobs where job.type == .ttsSentence && job.chapterID == chapterID && job.sentenceIndex == sentenceIndex && job.state == .completed {
-            var fresh = job; fresh.state = .pending; fresh.finishedAt = nil; fresh.error = nil; jobs[key] = fresh; changed = true
-        }
-        if changed { markDirty() }
-    }
     /// 与内存队列同步降级：持久层里非当前章节的 interactive 也退回 background。
     func demoteInteractive(except chapterID: UUID) {
         var changed = false
@@ -182,14 +194,20 @@ actor EnhancementJobStore {
         }
         if changed { markDirty() }
     }
-    /// 进入章节时把「上次失败但还有自动重试额度」的逐句任务退回 pending，返回这些
+    /// 进入跑道时把「上次失败但还有自动重试额度」的逐句任务退回 pending，返回这些
     /// 句子的序号：调用方要据此复位句子的 audioStatus，否则播放器看到 .failed 会
     /// 直接跳过，重录成功也听不见。
-    func reopenFailedTTS(chapterID: UUID) -> Set<Int> {
+    ///
+    /// 按键点查那几十句，不扫全表：这一步每句播放推进都要走一遍，而表上挂着几万个
+    /// 解析批次的账，扫一遍就是每句几万次比较。
+    func reopenFailedTTS(bookID: UUID, chapterID: UUID, sentenceIndices: [Int]) -> Set<Int> {
         var reopened: Set<Int> = []
-        for (key, job) in jobs where job.type == .ttsSentence && job.chapterID == chapterID && job.state == .failed && job.attempts < Self.maxAutoRetries {
-            var fresh = job; fresh.state = .pending; fresh.error = nil; fresh.finishedAt = nil; jobs[key] = fresh
-            if let i = job.sentenceIndex { reopened.insert(i) }
+        for i in sentenceIndices {
+            let key = Self.ttsKey(bookID: bookID, chapterID: chapterID, sentenceIndex: i)
+            guard var job = jobs[key], job.state == .failed, job.attempts < Self.maxAutoRetries else { continue }
+            job.state = .pending; job.error = nil; job.finishedAt = nil
+            jobs[key] = job
+            reopened.insert(i)
         }
         if !reopened.isEmpty { markDirty() }
         return reopened
@@ -372,6 +390,11 @@ actor ReaderPipeline {
     private var workers: [Task<Void, Never>] = []; private var started = false
     private var watchers: [UUID: [UUID: AsyncThrowingStream<Chapter, Error>.Continuation]] = [:]
     private var readingPositions: [UUID: Int] = [:]
+    /// 本次进程里已经因「出声的后端不对」删过的句子。主后端还没恢复时重录照样落在备用
+    /// 后端上，没有这道闸门的话每次开章都会删了重录一遍（见 ``purgeReclaimedAudio``）。
+    private var backendHealedSentenceIDs: Set<UUID> = []
+    /// 已经报过「整章过半不在主后端上」的章：那是换后端的状态，不是 bug，说过一次就够。
+    private var backendSplitReportedChapters: Set<UUID> = []
     private var interactiveRequests: [UUID: InteractiveRequest] = [:]  // key: bookID
     /// 最近一次「用户正在收听」的证据：播放位置更新、起播，都在刷新它。
     /// 分析批次看它是否还在新鲜窗口内决定让不让路——只靠显式的暂停/停止信号不可靠
@@ -446,6 +469,16 @@ actor ReaderPipeline {
     /// 正则把单个「！」就推成 0.7 强度（"非常紧张急促，语速加快"），而强指令 +
     /// temperature 0.9 正是这模型输出跑偏音频的条件。
     private static let fastPrimeLookahead = 8
+    /// 音频只往播放头后面排这么多句。
+    ///
+    /// 为什么收得起（这是「不影响当前播放」的依据）：合成只有一个 worker，而它每次
+    /// 取的都是离播放头最近的那句（`priority` 按距离给分），所以「下一章第 150 句也
+    /// 压在队里」换不来更早的出声——它只会排在当前章那几十句后面，纯粹是账和内存。
+    /// 反过来，只要跑道不比 worker 合成一句的时间短，下一句到点就一定已经录好。
+    /// 取 24：规则窗口（`fastPrimeLookahead`）的三倍，按一句 6 秒的听速约两分半，
+    /// 一个 worker 再慢也够它把紧接着的那几句准备好；读者往前挪一句，窗口就跟着挪一句。
+    /// 往回不排：没人倒着听，往回补的那几十句是把唯一的 worker 支走。
+    private static let ttsLookahead = 24
     /// 收听的让路上限。真机上门槛是「用户得先把听到的这本放下」，正常几分钟就放行；
     /// 这个数只在「播放器挂着不动、TTS 又一直失败」时兜底，防止解析永远饿死。
     private static let analysisStarvationTimeout: TimeInterval = 600
@@ -1087,7 +1120,7 @@ actor ReaderPipeline {
     /// 正文取导入时后台解析落库的那一份，点开章节不再跑 XML 解析。
     /// 只有落库缺失（后台还没排到、清过缓存）或断句口径对不上（规则改过）才回落解析器。
     private func loadParsedChapter(_ descriptor: ChapterDescriptor, bookID: UUID) async throws -> Chapter {
-        if let saved = await chapterStore.load(bookID: bookID, chapterID: descriptor.id),
+        if let saved = await cachedChapter(bookID: bookID, chapterID: descriptor.id),
            saved.textVersion == SentenceSplitter.textVersion {
             return await purgeReclaimedAudio(saved, bookID: bookID)
         }
@@ -1126,13 +1159,17 @@ actor ReaderPipeline {
 
     /// 走落库这条路就没有 parser 兜着了，而音频住在 `Library/Caches` 下——系统随时
     /// 能回收它。留着指向空气的 `audioURL`，播放器会直接跳过这一句，而 ``scheduleTTS``
-    /// 见 audioURL 非空也不排产，句子就永久静音。排产记录同样要退回 pending：
-    /// 任务还是 .completed 的话 `upsertAll` 认为做过，重排不进去。
+    /// 见 audioURL 非空也不排产，句子就永久静音。
+    ///
+    /// 退回 `audioURL == nil` 就够了，不用再去任务表里把记录翻回 pending：
+    /// 逐句任务做完就把记录销掉（见 ``EnhancementJobStore/complete(_:)``），
+    /// 所以这里没有「记录还钉着 .completed」可对账。
     ///
     /// 同一个循环还管「声音过期」：档案是**边听边补**的（先扫这一章附近几章，整本在后台补），
     /// 而那之前这句已经按旧口径（有名角色也一律无名那把嗓）录过了；说话人口径升级后
     /// ``migrateSpeakers`` 重算的名字同样会撞上这一条。`audioURL` 非空就永远排不进产，
     /// 不在这里开口子，这本书的对话会一直用错的声音，`produce` 里那点校验根本没有机会跑。
+    /// 比名字还多比一层**出声的后端**：降级的那几句名字对、嗓门不对（见下面那段 census）。
     ///
     /// `protecting` 是 worker 正在合成的那几句：漂移退回把它们也退回的话，等于任务表
     /// 和音频自己跟自己抢（这一轮录完，下一轮又看见一条指向同一句的 pending）。
@@ -1169,8 +1206,49 @@ actor ReaderPipeline {
             // `produce` 靠它认出该删的是哪一个。
             drifted.append(i)
         }
-        guard !reclaimed.isEmpty || !drifted.isEmpty else { return chapter }
-        for i in reclaimed + drifted { await store.reopenTTS(chapterID: chapter.id, sentenceIndex: i) }
+
+        // 名字之外还有一层身份：**这句由哪个后端出声**（见 `TTSEngineType.backend(ofAudioAt:)`）。
+        // 主后端抖一下就降级（真机日志里 Edge 那 9 次 Connection reset），那一句由备用后端录，
+        // 而 `recordedVoiceID` 记的仍是同一个人——上面这段和 `produce` 的缓存命中都只比名字，
+        // 谁也不会再问一句「是谁出的声」，于是「同一个人两句一个嗓」在磁盘上定型，
+        // 每次开章原样命中，听起来就是那个人时不时换个调。
+        //
+        // 判据只看这一章**混没混**：整章都不在主后端上是「用户换了后端」，那套音频本来就
+        // 自成一类（`cacheNamespaces` 存在的意义正是换后端不重录整本书），在这儿重录等于
+        // 几百句的合成风暴；零星落在几句上的异质音频才是降级漏下的 bug，所以只治少数派。
+        let primary = TTSEngineType.current
+        var onPrimary = 0
+        var foreignCandidates: [Int] = []
+        for i in chapter.sentences.indices {
+            guard let url = chapter.sentences[i].audioURL else { continue }
+            if TTSEngineType.backend(ofAudioAt: url) == primary {
+                onPrimary += 1
+            } else if !backendHealedSentenceIDs.contains(chapter.sentences[i].id),
+                      i != playing, !protecting.contains(i) {
+                foreignCandidates.append(i)
+            }
+        }
+        var offBackend: [Int] = []
+        if !foreignCandidates.isEmpty, foreignCandidates.count * 2 <= onPrimary {
+            for i in foreignCandidates {
+                let sentenceID = chapter.sentences[i].id
+                chapter.sentences[i].audioURL = nil
+                chapter.sentences[i].duration = nil
+                chapter.sentences[i].audioStatus = .pending
+                // 文件必须删掉：`produce` 只比 voiceID，留着它下一轮就把同一份降级音频捞回来。
+                await generator.discardAudio(bookID: bookID, chapterID: chapter.id, sentenceID: sentenceID)
+                // 这一句记进闸门：主后端还没恢复的话重录出来的照样是备用后端的声，
+                // 不设闸门就变成每次开章删一遍、录一遍。
+                backendHealedSentenceIDs.insert(sentenceID)
+                offBackend.append(i)
+            }
+            print("[Voice] chapter=\(chapter.index) 有 \(offBackend.count)/\(onPrimary + offBackend.count) 句由备用后端出声（主后端 \(primary.rawValue)）→ 删掉重录，同一个人不许两句一个调")
+        } else if onPrimary > 0, !foreignCandidates.isEmpty,
+                  backendSplitReportedChapters.insert(chapter.id).inserted {
+            print("[Voice] chapter=\(chapter.index) 有 \(foreignCandidates.count) 句不在主后端 \(primary.rawValue) 上，但已过半数 → 当作换后端保留，不重录")
+        }
+
+        guard !reclaimed.isEmpty || !drifted.isEmpty || !offBackend.isEmpty else { return chapter }
         chapter.ttsStatus = .partial
         chapter.audioStatus = .generating
         try? await chapterStore.save(chapter: chapter, bookID: bookID)
@@ -1234,11 +1312,15 @@ actor ReaderPipeline {
             readingChapters[bookID] = chapterID
             Task { await self.refillAnalysisWindow(bookID: bookID) }
         }
-        guard let chapter = await chapterStore.load(bookID: bookID, chapterID: chapterID) else { return }
+        // 每句推进都走到这儿，所以这一头一次整章解码都不该有：正文先问内存
+        // （`ChapterCache` 改成读穿了——写正文的地方就是刷它的地方），miss 才落盘解一次。
+        guard let chapter = await cachedChapter(bookID: bookID, chapterID: chapterID) else { return }
         await promote(chapter: chapter, bookID: bookID, sentence: sentenceIndex)
-        // §5 相邻章节档位：下一章 > 上一章 > 远处后台（100）
-        await promoteNeighbor(nextChapterID, bookID: bookID, base: 500)
-        await promoteNeighbor(prevChapterID, bookID: bookID, base: 400)
+        // §5 相邻章节档位：下一章 > 上一章 > 远处后台（100）。
+        // 邻章只排「读者真会从那一头进来」的那一段：下一章从 0，上一章从上次停下的地方。
+        let prevEntry = prevChapterID.flatMap { readingPositions[$0] } ?? 0
+        await promoteNeighbor(nextChapterID, bookID: bookID, base: 500, from: 0)
+        await promoteNeighbor(prevChapterID, bookID: bookID, base: 400, from: prevEntry)
     }
 
     /// UI「重试」入口（§14 情况5）：该章 failed 任务复位并立即做 interactive 提升。
@@ -1285,17 +1367,50 @@ actor ReaderPipeline {
         print("[InteractivePlayback] chapter=\(rec.chapterIndex) sentence=\(rec.sentence) cacheHit=\(rec.cacheHit) timeToPlay=\(String(format: "%.2f", t))s SLA=\(t <= 5 ? "PASS" : "MISS") reason=\(reason) stages(analysis=\(stage(rec.analysisDoneAt))s audioReady=\(stage(rec.audioReadyAt))s)")
     }
 
-    private func promoteNeighbor(_ id: UUID?, bookID: UUID, base: Int) async {
-        guard let id, let chapter = await chapterStore.load(bookID: bookID, chapterID: id) else { return }
+    /// 热路径上的正文：先问内存，miss 才解盘。
+    ///
+    /// `ChapterCache` 以前只写不读（八章正文常驻着没人看一眼），而每句播放推进都要
+    /// 重解三章：本章 + 下一章 + 上一章，实测一章 133KB、整份解码 2.2ms，一小时朗读
+    /// 就是 1800 次解码 3.9 秒 CPU——全花在跟 GPU 抢电上。现在它是读穿的：
+    /// 落库正文的每一处都同时 `cache.set`（见 `chapterStore.save` 的调用点），
+    /// 所以内存里那一份不会比盘上旧。
+    private func cachedChapter(bookID: UUID, chapterID: UUID) async -> Chapter? {
+        if let cached = await cache.get(chapterID) { return cached }
+        guard let loaded = await chapterStore.load(bookID: bookID, chapterID: chapterID) else { return nil }
+        await cache.set(loaded)
+        return loaded
+    }
+
+    /// 播放头往后 `ttsLookahead` 句里、参数已就绪的句子。
+    ///
+    /// 只往前看，且不越过章尾：读者不会倒着听，往回补的那一段是把唯一的 worker 支走。
+    private func dueSentenceIndices(chapter: Chapter, from sentence: Int) -> [Int] {
+        let lower = max(0, min(sentence, chapter.sentences.count))
+        let upper = min(chapter.sentences.count, lower + Self.ttsLookahead)
+        guard lower < upper else { return [] }
+        return (lower..<upper).filter { chapter.sentences[$0].analysisStatus == .completed }
+    }
+
+    /// 上一轮排的那段跑道罩不罩得住新的播放头。罩得住就别重扫任务表。
+    private func coversRunway(from anchor: Int, to sentence: Int) -> Bool {
+        sentence >= anchor && sentence < anchor + Self.ttsLookahead
+    }
+
+    private func promoteNeighbor(_ id: UUID?, bookID: UUID, base: Int, from sentence: Int) async {
+        guard let id, let chapter = await cachedChapter(bookID: bookID, chapterID: id) else { return }
         // 邻章只排音频：解析是这本书的后台作业（窗口补产），不在这里按打开动作插队
-        let due = chapter.sentences.indices
-            .filter { chapter.sentences[$0].analysisStatus == .completed }
-            .map { (index: $0, priority: base) }
+        let due = dueSentenceIndices(chapter: chapter, from: sentence).map { (index: $0, priority: base) }
         await scheduleTTS(chapter: chapter, bookID: bookID, sentences: due, mode: .background)
     }
 
     @discardableResult
     private func promote(chapter: Chapter, bookID: UUID, sentence: Int) async -> Chapter {
+        // 这一笔只在「锚点真的挪了」的时候重做：逐句推进每句都会走进这儿，
+        // 而 demoteInteractive 是整张任务表的扫描——表上挂着几万个解析批次的账时，
+        // 扫一遍就是每句几万次比较，结果还和上一次一模一样。
+        let enteredChapter = interactiveRequests[bookID]?.chapterID != chapter.id
+        let rescheduled = enteredChapter
+            || !(readingPositions[chapter.id].map { coversRunway(from: $0, to: sentence) } ?? true)
         readingPositions[chapter.id] = sentence
         lastListeningBeat = Date()
         await suspendAnalysisForListening()
@@ -1303,8 +1418,10 @@ actor ReaderPipeline {
         // 窗外的句子用「已落库的解析结果」，没解析到的句子只缺校准、不缺参数。
         var ready = await prime(chapter: chapter, bookID: bookID, from: sentence)
         // §19.12 只保留最近一次打开意图：其他章节的 interactive 任务全部降级
-        await ttsQueue.demoteInteractive(except: ready.id)
-        await store.demoteInteractive(except: ready.id)
+        if rescheduled {
+            await ttsQueue.demoteInteractive(except: ready.id)
+            await store.demoteInteractive(except: ready.id)
+        }
         let t0 = Date()
         let cached = ready.sentences.indices.contains(sentence) && ready.sentences[sentence].audioURL != nil
         interactiveRequests[bookID] = InteractiveRequest(
@@ -1325,12 +1442,14 @@ actor ReaderPipeline {
             print("[SLA] chapter=\(empty.index) 正文为空（图片章/空白页）→ 不排产")
             return empty
         }
-        // 上次合成失败、还有自动重试额度的句子：任务退回 pending（下面排产循环
-        // 会重新入队），句子的 audioStatus 也必须一起复位——播放器看到 .failed
-        // 会直接跳过，那样重录成功也听不见，句子就成了永久静音。
-        let retryable = await store.reopenFailedTTS(chapterID: ready.id)
+        // 只为「参数已就绪」的句子排 TTS：本窗（规则）+ 解析已跑过的句子。
+        let runway = dueSentenceIndices(chapter: ready, from: sentence)
+        // 上次合成失败、还有自动重试额度的句子：任务退回 pending（下面排产会重新入队），
+        // 句子的 audioStatus 也必须一起复位——播放器看到 .failed 会直接跳过，
+        // 那样重录成功也听不见，句子就成了永久静音。
+        let retryable = await store.reopenFailedTTS(bookID: bookID, chapterID: ready.id, sentenceIndices: runway)
         var revived = false
-        for i in ready.sentences.indices where retryable.contains(i) && ready.sentences[i].audioURL == nil {
+        for i in retryable where ready.sentences[i].audioURL == nil {
             ready.sentences[i].audioStatus = .pending
             revived = true
         }
@@ -1346,13 +1465,9 @@ actor ReaderPipeline {
             interactiveRequests[bookID]?.analysisDoneAt = t0
             print("[SLA] T2 分析就绪(规则) chapter=\(ready.index) sentence=\(sentence) elapsed=0.00s")
         }
-        // 打开章节不再排解析：解析是导入时起的后台作业（`fillAnalysisWindow`），
-        // 播放这条路径上只有 TTS。窗口的句子由上面的规则填满，播放头往前推
-        // 一格窗口就跟着滑一格，所以解析没跑到的章节照样能连续播，只是听感没被校准。
-        // 只为「参数已就绪」的句子排 TTS：本窗（规则）+ 解析已跑过的句子。
-        let due = ready.sentences.indices
-            .filter { ready.sentences[$0].analysisStatus == .completed }
-            .map { (index: $0, priority: priority($0, near: sentence)) }
+        // 打开章节不排解析（解析是导入时起的后台作业 `fillAnalysisWindow`），播放这条
+        // 路径上只有 TTS；而 TTS 只排播放头后面那一段跑道，理由见 `ttsLookahead`。
+        let due = runway.map { (index: $0, priority: priority($0, near: sentence)) }
         await scheduleTTS(chapter: ready, bookID: bookID, sentences: due, mode: .interactive, requestedAt: t0)
         return ready
     }
@@ -1405,7 +1520,7 @@ actor ReaderPipeline {
         jobs.reserveCapacity(sentences.count)
         for item in sentences {
             guard chapter.sentences.indices.contains(item.index), chapter.sentences[item.index].audioURL == nil else { continue }
-            let key = "tts:\(bookID.uuidString):\(chapter.id.uuidString):\(item.index)"
+            let key = EnhancementJobStore.ttsKey(bookID: bookID, chapterID: chapter.id, sentenceIndex: item.index)
             jobs.append(EnhancementJob(id: key, bookID: bookID, chapterID: chapter.id, type: .ttsSentence, batchIndex: nil, sentenceIndex: item.index, state: .pending, priority: item.priority, mode: mode, memoryBytes: ttsEstimate, attempts: 0, createdAt: requestedAt, startedAt: nil, finishedAt: nil, error: nil))
         }
         guard !jobs.isEmpty else { return }
@@ -1567,9 +1682,10 @@ actor ReaderPipeline {
                         updated.recordedVoiceID = old.recordedVoiceID
                         // 播放头之后 LLM 说了算。规则版音频若参数被改，删文件重录：
                         // 不删的话 produce 的磁盘命中会把旧 WAV 原样取回来。
+                        // 下面按本批范围排产，这一句会作为新任务重排——逐句任务做完就
+                        // 销记录，账上没有残留的 .completed 要翻。
                         if old.audioURL != nil, Self.affectsAudio(old, updated, chapter: latest, bookID: job.bookID) {
                             await generator.discardAudio(bookID: job.bookID, chapterID: job.chapterID, sentenceID: old.id)
-                            await store.reopenTTS(chapterID: job.chapterID, sentenceIndex: i)
                             updated.audioURL = nil
                             updated.duration = nil
                             updated.audioStatus = .pending
@@ -1604,7 +1720,7 @@ actor ReaderPipeline {
                     print("[SLA] T4 音频就绪 chapter=\(chapter.index) sentence=\(i) elapsed=\(String(format: "%.2f", Date().timeIntervalSince(rec.t0)))s")
                 }
             }
-            job.state = .completed; job.finishedAt = Date(); job.error = nil; await store.update(job)
+            job.state = .completed; job.finishedAt = Date(); job.error = nil; await store.complete(job)
         } catch {
             // 被后台门禁掐掉的批次/句子没有错，只是时机不对：退回队列等回前台重跑。
             // 记成 failed 的话，用户一回来就看到满屏「分析失败 / 合成失败」，而那一
@@ -1639,7 +1755,10 @@ actor ReaderPipeline {
                     chapter.sentences[i].audioStatus = .failed
                     chapter.ttsStatus = .failed
                 }
-                try? await chapterStore.save(chapter: chapter, bookID: job.bookID); emit(chapter)
+                // 缓存必须跟着刷：正文缓存现在是热路径的读源（`cachedChapter`），
+                // 只写盘不写内存的话，失败状态落在这儿的那一句会被下一句推进时
+                // 从内存里读出旧形状覆盖回去。
+                try? await chapterStore.save(chapter: chapter, bookID: job.bookID); await cache.set(chapter); emit(chapter)
             }
         }
         let afterMemory = MemoryProbe.snapshot()
@@ -1749,11 +1868,10 @@ actor ReaderPipeline {
                 var merged = saved.sentences[i]
                 merged.startsParagraph = result.sentences[i].startsParagraph
                 result.sentences[i] = merged
-            } else if !audioStillThere {
-                // 音频文件已被回收：这一句保留解析出来的原样（没音频），但排产记录
-                // 还停在 .completed，`upsert` 会认为做过而不重排——不退回 pending 就永远静音。
-                await store.reopenTTS(chapterID: raw.id, sentenceIndex: i)
             }
+            // 音频文件被回收了（`!audioStillThere`）就什么都不做：这一句留在 `raw`
+            // 的形状（没有音频），排产看得见它。以前这里要 `reopenTTS` 把记录从
+            // .completed 翻回 pending，现在逐句任务做完即销记录，没有可翻的账。
         }
         return result
     }

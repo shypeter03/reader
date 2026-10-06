@@ -72,6 +72,7 @@
 		52AA000030AA000000002032 /* PageLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002031 /* PageLayout.swift */; };
 		52AA000030AA000000002042 /* ReaderPageText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002041 /* ReaderPageText.swift */; };
 		52AA000030AA000000002052 /* ReaderTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000002051 /* ReaderTheme.swift */; };
+		52AA000030AA000000003002 /* BookStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA000000003001 /* BookStage.swift */; };
 		52B0C6D4303FD66D0073EED6 /* Hub in Frameworks */ = {isa = PBXBuildFile; productRef = 52B0C6D3303FD66D0073EED6 /* Hub */; };
 		52B0C6D6303FD66D0073EED6 /* Tokenizers in Frameworks */ = {isa = PBXBuildFile; productRef = 52B0C6D5303FD66D0073EED6 /* Tokenizers */; };
 		52B0C6D8303FD66D0073EED6 /* Transformers in Frameworks */ = {isa = PBXBuildFile; productRef = 52B0C6D7303FD66D0073EED6 /* Transformers */; };
@@ -88,6 +89,7 @@
 		52C1D7153051000000000005 /* FastChapterAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7143051000000000005 /* FastChapterAnalyzer.swift */; };
 		52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7203060000000000001 /* EdgeTTSService.swift */; };
 		52C1D7233060000000000003 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7223060000000000003 /* ChapterStore.swift */; };
+		52AA000030AA00000000B02 /* BookPagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA00000000B01 /* BookPagination.swift */; };
 		52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */; };
 		52C1DB013080000000000002 /* Qwen3TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB013080000000000001 /* Qwen3TTSService.swift */; };
 		52C1DB023080000000000002 /* AudioUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB023080000000000001 /* AudioUtils.swift */; };
@@ -187,6 +189,7 @@
 		52AA000030AA000000002031 /* PageLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageLayout.swift; sourceTree = "<group>"; };
 		52AA000030AA000000002041 /* ReaderPageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderPageText.swift; sourceTree = "<group>"; };
 		52AA000030AA000000002051 /* ReaderTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderTheme.swift; sourceTree = "<group>"; };
+		52AA000030AA000000003001 /* BookStage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookStage.swift; sourceTree = "<group>"; };
 		52B0C6DC303FDDBD0073EED6 /* SystemTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemTTSService.swift; sourceTree = "<group>"; };
 		52B0C6DE303FDF560073EED6 /* ReaderContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderContainer.swift; sourceTree = "<group>"; };
 		52B0C6E0303FE0D00073EED6 /* QwenChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QwenChapterAnalyzer.swift; sourceTree = "<group>"; };
@@ -196,6 +199,7 @@
 		52C1D7143051000000000005 /* FastChapterAnalyzer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FastChapterAnalyzer.swift; sourceTree = "<group>"; };
 		52C1D7203060000000000001 /* EdgeTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeTTSService.swift; sourceTree = "<group>"; };
 		52C1D7223060000000000003 /* ChapterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterStore.swift; sourceTree = "<group>"; };
+		52AA000030AA00000000B01 /* BookPagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookPagination.swift; sourceTree = "<group>"; };
 		52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-0.6B-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3-0.6B-MLX-4bit"; sourceTree = "<absolute>"; };
 		52C1DB013080000000000001 /* Qwen3TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSService.swift; sourceTree = "<group>"; };
 		52C1DB023080000000000001 /* AudioUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioUtils.swift; sourceTree = "<group>"; };
@@ -402,6 +406,7 @@
 				52C1D7103051000000000001 /* ChapterCache.swift */,
 				52C1D7123051000000000003 /* BookStore.swift */,
 				52C1D7223060000000000003 /* ChapterStore.swift */,
+				52AA000030AA00000000B01 /* BookPagination.swift */,
 				52AA000030AA000000000F01 /* CharacterRoster.swift */,
 				52C1F0013099000000000001 /* ReaderCache.swift */,
 			);
@@ -430,6 +435,7 @@
 			isa = PBXGroup;
 			children = (
 				52221441303EE80D0022E4E3 /* LibraryView.swift */,
+				52AA000030AA000000003001 /* BookStage.swift */,
 				52AA000030AA000000000B01 /* ReaderPageView.swift */,
 				52AA000030AA000000000B11 /* CurlPageTurner.swift */,
 				52AA000030AA000000000C01 /* LaunchSplash.swift */,
@@ -692,6 +698,7 @@
 				52AA000030AA000000000B22 /* TurnSpine.swift in Sources */,
 				52AA000030AA000000000B02 /* ReaderPageView.swift in Sources */,
 				52AA000030AA000000000B12 /* CurlPageTurner.swift in Sources */,
+				52AA000030AA000000003002 /* BookStage.swift in Sources */,
 				52AA000030AA000000000C02 /* LaunchSplash.swift in Sources */,
 				52221446303EE8920022E4E3 /* BookView.swift in Sources */,
 				522213E8303EE4160022E4E3 /* ContentView.swift in Sources */,
@@ -735,6 +742,7 @@
 				52C1DB0A3080000000000002 /* SpeechTokenizerEncoder.swift in Sources */,
 				52C1DB0B3080000000000002 /* Talker.swift in Sources */,
 				52C1D7233060000000000003 /* ChapterStore.swift in Sources */,
+				52AA000030AA00000000B02 /* BookPagination.swift in Sources */,
 				52AA000030AA000000000F02 /* CharacterRoster.swift in Sources */,
 				5222143F303EE7610022E4E3 /* ReaderPipeline.swift in Sources */,
 				52221432303EE6D40022E4E3 /* TTSService.swift in Sources */,

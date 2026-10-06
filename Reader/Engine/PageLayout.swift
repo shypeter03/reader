@@ -73,6 +73,16 @@ struct PageLayout: Equatable {
     /// 纸上就留着一条看得见的白。
     let columnStretch: [[CGFloat]]
 
+    /// 这张纸左右**各**让开的宽（`ReaderTypography.sideMargin` 算出来的那一个数）。
+    ///
+    /// 为什么要随页交出去、而不是渲染端自己再算一遍：版心宽是从边距减出来的，边距又按
+    /// 「一行少一个字」抽——两边各量一次就有两把尺，量的那一栏和画的那一栏一旦不同宽，
+    /// 栏尾就溢出（#165 立的规矩：栏数只由分页端判一次）。这里连边距一起交，渲染端只是
+    /// 把它垫回 `.padding(.horizontal,)`，字宽一次都不再问。
+    ///
+    /// 两条边距是同一个数，所以正文永远落在纸的正中。
+    let sideMargin: CGFloat
+
     let bodySize: CGFloat
 
     var pageCount: Int { pages.count }
@@ -81,6 +91,10 @@ struct PageLayout: Equatable {
         pages: [[]],
         columnCuts: [[0]],
         columnStretch: [[0]],
+        sideMargin: ReaderTypography.sideMargin(
+            letter: ReaderBlock.letterWidth(body: 19),
+            columns: 1
+        ),
         bodySize: 19
     )
 
@@ -146,19 +160,32 @@ struct PageLayout: Equatable {
 
         let lineSpacing = ReaderTypography.lineSpacing(size: body, scale: lineScale)
 
-        let contentWidth = max(
-            area.width - ReaderTypography.horizontalMargin * 2,
-            40
-        )
+        /// 一个字有多宽：#168 那一条「每行少一个字」的账按它算，不按字号。
+        /// 实测数字与为什么不按 1em 见 `ReaderBlock.letterWidth`。
+        let letter = ReaderBlock.letterWidth(body: body)
 
-        /// 这张纸摊几栏、一栏多宽。断行与量高一律按 `columnWidth` 走，渲染端按 `columnCuts`
-        /// 的项数算出同一个数（两边各判一遍宽，就是「分页两栏、纸上一栏」）。
+        /// 这张纸摊几栏、左右各让开多宽、一栏多宽。断行与量高一律按 `columnWidth` 走，
+        /// 渲染端按 `columnCuts` 的项数配上这一页交出去的 `sideMargin`（两边各判一遍宽，
+        /// 就是「分页两栏、纸上一栏」）。
         ///
         /// 栏宽跟着字号走（见 `ReaderTypography.minColumnLetters`），所以大字档在 iPhone 横屏上
         /// 会退回单栏——这不是妥协，是那一档一行只剩十一个字，两端对齐根本补不平。
+        ///
+        /// 顺序只有这一条路：`sideMargin` 要按栏数抽字宽（两栏就是两行各少一个字），
+        /// 而栏数又要问收窄之后的那一栏够不够宽。`columnCount` 里那一次定点管的就是这个环。
         let columns = ReaderTypography.columnCount(
-            contentWidth: contentWidth,
-            body: body
+            areaWidth: area.width,
+            body: body,
+            letter: letter
+        )
+        let sideMargin = ReaderTypography.sideMargin(
+            letter: letter,
+            columns: columns
+        )
+        let contentWidth = ReaderTypography.contentWidth(
+            areaWidth: area.width,
+            letter: letter,
+            columns: columns
         )
         let columnWidth = ReaderTypography.columnWidth(
             contentWidth: contentWidth,
@@ -586,6 +613,7 @@ struct PageLayout: Equatable {
             pages: pages,
             columnCuts: columnCuts,
             columnStretch: columnStretch,
+            sideMargin: sideMargin,
             bodySize: body
         )
     }

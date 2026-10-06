@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
@@ -228,57 +229,83 @@ final class ReaderLauncher: ObservableObject {
     /// 「拖到一半松手，动画又从全屏开始重放」——转场只认一把尺子。
     @Published var presentation: Double = 0
 
-    private init() {}
+    /// 这一趟转场走到哪一步了。`presentation` 只管「走到哪儿」，
+    /// 这一条管「这一趟还算不算数」——细节见 `BookPhase`。
+    @Published private(set) var phase: BookPhase = .idle
+
+    private init() {
+        observeBackground()
+    }
+
+    /// 转场是否还在飞。翻页、下拉这些手势在它为真的时候一律让路，
+    /// 否则会出现「书还在半空，底下正文已经翻到下一章」。
+    var isTransitioning: Bool {
+        phase != .shown || presentation < 0.998
+    }
 
     /// 点书卡：空书什么都不做，其余一律进正文。
     func open(_ book: Book) {
 
+        // 转场途中再点别的书（或者连点同一张）：直接吃掉。放行会让两次动画写在
+        // 同一个 presentation 上——前一次还没落位就被改写，视觉上就是「书飞了一半消失」。
+        guard phase == .idle else { return }
+
         guard !book.chapters.isEmpty else { return }
 
-        // 记下这张卡现在在哪：退出阅读页时整页要缩回它上面。
-        sourceFrame = frames[book.id]
-
-        // 「返回有没有动画」只有真机说得上话，这里先把口径记下来：落点拿到了没有。
-        // 拿不到落点时 CoverMatch 退回 0.86 倍等比缩放——那点位移小到和没动一样，
-        // 现场看起来就是「硬切」，所以这一条必须先排除掉。
-        print("[Turn] 打开 「\(book.title.prefix(12))」 落点="
-            + (sourceFrame.map { "w\(Int($0.width)) 中心(\(Int($0.midX)),\(Int($0.midY)))" }
-                ?? "nil ← 封面卡的位置没记上，退场会退化成等比缩放"))
-
-        let player = PlayerManager.shared
-
-        // 音频还活在这本书上（退回书库并没有停播）：进哪一章跟着播放器走。
-        // 书单里那份进度是离开那一刻写的，声音后来又往前跑了几个字，
-        // 拿它当落点就是「退出再进来，刚听的那句没了」。
-        let target = player.currentBook?.id == book.id
-            ? player.currentChapterIndex
-            : book.lastReadChapter
-
-        opened = ReaderRoute(
+        let route = ReaderRoute(
             book: book,
             chapterIndex: min(
-                max(target, 0),
+                max(entryChapter(for: book), 0),
                 book.chapters.count - 1
             )
         )
 
+        // 「返回有没有动画」只有真机说得上话，这里先把口径记下来：落点拿到了没有。
+        // 落点每次现读 `frames`（见 `landingFrame(for:)`），拿不到就是那张卡真的不在屏上，
+        // BookStage 会退到屏幕中央一本凭空打开的书——那比飞错位置诚实。
+        print("[Turn] 打开 「\(book.title.prefix(12))」 落点="
+            + (landingFrame(for: book.id).map { "w\(Int($0.width)) 中心(\(Int($0.midX)),\(Int($0.midY)))" }
+                ?? "nil ← 封面卡不在可见区域，走回退落点"))
+
+        opened = route
         presentation = 0
+        phase = .opening
 
         withAnimation(
             .smooth(duration: Self.openDuration, extraBounce: 0.04)
         ) {
             presentation = 1
+        } completion: {
+            // 只认这一次跳转：这 0.46s 里如果已经点了返回，`phase` 就不是 .opening 了，
+            // 把它的完成写成 .shown 会让正在缩回去的书重新被当成「已经打开」。
+            guard self.opened?.id == route.id, self.phase == .opening else { return }
+            self.phase = .shown
         }
+    }
+
+    /// 点开该进哪一章：跟着播放器走，不跟着书单里那份进度走。
+    ///
+    /// 书单里的进度是「离开那一刻」写的，声音后来又往前跑了几个字——
+    /// 拿它当落点就是「退出再进来，刚听的那句没了」。
+    private func entryChapter(for book: Book) -> Int {
+        let player = PlayerManager.shared
+        return player.currentBook?.id == book.id
+            ? player.currentChapterIndex
+            : book.lastReadChapter
     }
 
     func close(
         duration: TimeInterval = ReaderLauncher.closeDuration
     ) {
 
-        guard let route = opened else { return }
+        // `.idle` = 根本没开着书；`.closing` = 这一趟已经在收了（返回按钮和系统侧滑
+        // 会各敲一次，第二次敲会把动画从头重放，看着像「收到一半又弹回去」）。
+        guard let route = opened, phase != .idle, phase != .closing else { return }
 
         let from = presentation
         let started = Date()
+
+        phase = .closing
 
         // 判据是「这一趟到底跑没跑动画」：动画只要注册上了，落地就要等满 duration，
         // 墙上时间就会 ≈ duration。远小于它 = 值根本没被插值 = 当场硬切，
@@ -300,9 +327,9 @@ final class ReaderLauncher: ObservableObject {
             // 落位跑完才拆视图：早一步拆就是硬切，缩回封面那一下白做。
             // 认一下还是不是同一次跳转——这 0.46s 里用户又点了别的书，
             // 无条件清掉会把刚打开的那本一起清没。
-            if self.opened?.id == route.id {
-                self.opened = nil
-            }
+            guard self.opened?.id == route.id, self.phase == .closing else { return }
+            self.opened = nil
+            self.phase = .idle
         }
     }
 
@@ -311,7 +338,9 @@ final class ReaderLauncher: ObservableObject {
         _ progress: Double
     ) {
 
-        guard opened != nil else { return }
+        // 转场没落定就拖：那时 presentation 正被动画写着，逐帧插值会把两条写入搅在一起
+        // （书在半空抖）。下拉只在 .shown 之后才成立。
+        guard phase == .shown else { return }
 
         presentation = min(1, max(0, 1 - progress))
     }
@@ -338,12 +367,71 @@ final class ReaderLauncher: ObservableObject {
     /// 每帧都失效。
     var frames: [UUID: CGRect] = [:]
 
-    private(set) var sourceFrame: CGRect?
+    /// 转场落点：每次现读，不缓存。
+    ///
+    /// 为什么不能像以前那样在点下那一刻记一份：这 0.46s 里那张卡可能移位——网格刷新、
+    /// 设备旋转、甚至用户在下拉途中把书库滚走了，照旧值飞就是「书落在别的地方」。
+    /// 现读拿到的框已经把祖先的 `scaleEffect` 算进去了（`.probe/stage-facts-probe.swift`
+    /// 量的：父视图缩到 0.9，子视图报的 global 宽同步 100→90、x 同步 200→210），
+    /// 所以叠在缩小的书库上的这一层不需要再乘一遍系数。**交接也正是这一点保证的**：
+    /// 副本读的是这一份，真卡刚写进的还是同一份，`presentation` 落到 0 那一刻两边必然同一个框。
+    /// 代价写在明面上：飞的那一段底下书库正在缩（0.94），这一份会跟着漂最多 3%，
+    /// 而它乘的是插值系数、两端都是 0，所以只在中间几格、几 pt 以内，看不出摆。
+    /// 返回 nil = 这张卡现在没有布局（已滚出可见区域），由 `BookStage` 走回退落点。
+    func landingFrame(for bookID: UUID) -> CGRect? {
+        frames[bookID]
+    }
+
+    /// 背景落地：转场飞到一半被切到后台时，`withAnimation` 的 completion 可能永远不回来
+    /// （系统把动画掐了），`phase` 就卡在 .opening/.closing——回来以后书悬在半空且再也不肯翻页。
+    /// 退到后台那一刻把状态直接写死到该到的位置：动画已被系统吞掉，从后台回来看到静止画面是诚实的。
+    private func observeBackground() {
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.didEnterBackgroundNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                ReaderLauncher.shared.landIfMidTransition()
+            }
+        }
+    }
+
+    func landIfMidTransition() {
+        switch phase {
+        case .opening:
+            presentation = 1
+            phase = .shown
+        case .closing:
+            presentation = 0
+            opened = nil
+            phase = .idle
+        case .idle, .shown:
+            break
+        }
+    }
 
     /// 这两个数出现在参数默认值里，而默认值表达式不在主线程上下文中，所以要 nonisolated。
     nonisolated private static let openDuration: TimeInterval = 0.46
 
     nonisolated static let closeDuration: TimeInterval = 0.46
+}
+
+/// 转场走到哪一步。
+///
+/// `presentation` 是一条连续的尺子（0→1），单靠它没法回答「这一趟还算不算数」：
+/// 值在 0.5 的时候，可能是正在打开、正在关闭，也可能是用户正把它拖在手里。
+/// 这几个区别决定了重复点击要不要吃掉、返回要不要重放、翻页手势要不要让路，
+/// 所以写成显式的四个状态而不是从 `presentation` 反推。
+enum BookPhase {
+    /// 书库静止。
+    case idle
+    /// 书正在从卡片放大展开。
+    case opening
+    /// 阅读器正常显示，转场已经交回给阅读页。
+    case shown
+    /// 书正在收拢缩回卡片。
+    case closing
 }
 
 // MARK: - Views

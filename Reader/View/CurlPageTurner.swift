@@ -9,22 +9,28 @@
 //  撑到整屏（见 `ReaderView.readerContent` 的 `ignoresSafeArea`），整屏就是一张纸，
 //  灵动岛和 home 指示条那两段也跟着卷。撑不满的表现就是「只有中间在翻」。
 //
+//  这张纸摊成一面还是左右两面（`isSpread`）由外层按**纸的实际宽度**判（见
+//  `ReaderTypography.spreadAllowed`），这里只照着摆：`.min` 一面纸一个控制器，
+//  `.mid` 两面纸一对控制器。
+//
 
 import SwiftUI
 import UIKit
 
-/// 一屏一页的卷页容器。喂进来的还是 `PageLayout` 那一份「一页一面」。
+/// 卷页容器。喂进来的还是 `PageLayout` 那一份「一页一面」，摊成双页时两面一起算一摊。
 ///
-/// 口径三处，都不打算绕回去：
-/// ① 一面纸只印一面：走的是 `isDoubleSided` 的默认值 false，卷起来露的是 **UIKit 自己那张
-///    白卡纸**（不是我们的纸）。模拟器抓飞行帧量过：黑底页那一张是 0.777 的亮灰，
-///    把 `host.view.backgroundColor` 从黑改成 clear 一点没变（0.737），钉 traits 也治不到。
-///    想自己供纸背也不行——竖排单页只能走 spine `.min`，那里递 1 个控制器报「要 2 个」、
-///    递 2 个报「要 1 个」。所以深色档那一层亮纸目前就是亮着翻过去，没有兜住它。
-///    压暗盖层这条路试过并撤掉：α=0.75 的黑确实把飞行帧从 0.777 压到 0.192（模拟器抓帧量的，
-///    且必须挂 window——挂 `pager.view` 压不住，curl 图层排在它的子视图之上），
+/// 口径四处，都不打算绕回去：
+/// ① 单页那一档（spine `.min`）一面纸只印一面：走的是 `isDoubleSided` 的默认值 false，
+///    卷起来露的是 **UIKit 自己那张白卡纸**（不是我们的纸）。模拟器抓飞行帧量过：黑底页
+///    那一张是 0.777 的亮灰，把 `host.view.backgroundColor` 从黑改成 clear 一点没变（0.737），
+///    钉 traits 也治不到。想自己供纸背也不行——竖排单页只能走 spine `.min`，那里递 1 个
+///    控制器报「要 2 个」、递 2 个报「要 1 个」。所以深色档那一层亮纸目前就是亮着翻过去，
+///    没有兜住它。压暗盖层这条路试过并撤掉：α=0.75 的黑确实把飞行帧从 0.777 压到 0.192
+///    （模拟器抓帧量的，且必须挂 window——挂 `pager.view` 压不住，curl 图层排在它的子视图之上），
 ///    代价是那 0.4s 整屏一起暗（正文 0.091 → 0.025），真机上看着比那张亮纸还碍事。
-///    真机上若发现落页错开一格，说明要按书帖重排页序，不是改一行开关。
+///    **双页那一档没有这个问题**：`.mid` 把 `isDoubleSided` 拧成 true，卷起来露的纸背是
+///    我们供的那两面（探针录屏逐帧看过，近黑的四面纸翻一趟，全程没有亮页闪；唯一的亮处
+///    是卷起那道弧上的高光，它不跟纸色走，真书也一样）。
 /// ② 页序由外面定义（`startIndex` + `pageCount` + `content`），这里只认连续整数。
 ///    阅读页把「本章 + 已经预取好的相邻那一章」拼成同一段页序递进来（见 `ReaderView.TurnSpine`），
 ///    所以章边界不再是一堵墙：拖到本章最后一页还能往外拖，那一下就是普通的卷页，
@@ -33,12 +39,31 @@ import UIKit
 ///    的时候（目录跳章、字号/页宽变了重排）；跨章不算——那一段页序里两边都在，
 ///    每个下标对应的还是同一面纸。把跨章也算成换版的话，落点会被重新供页，
 ///    纸刚卷到底就被一张新生成的同类纸顶掉，看着就是闪一下白。
+/// ④ 双页的一摊怎么配对：按**下标的奇偶**配（偶数是左面、奇数是右面），不按「离这段页序
+///    开头第几面」配。理由只有一条：`TurnSpine` 的规矩是已给出去的下标永远不动，所以下标
+///    的奇偶也不会动——配对因此是稳定的。照起点配就不是：上一章的纸预取到位那一下起点会挪，
+///    于是每一摊的配对整体错开一面，读者正在看的那两面当场被拆开重排（表现是「页自己跳了
+///    一下」）。代价是页序两头各可能差一面，那两面交**空白纸**（`content` 会拿到一个区间外
+///    的下标，见 `ReaderView.pageView`）——摊不满的那半张纸就是书的头尾那一张白纸，
+///    而书中间永远不会有它。
 ///
 /// 翻页的节奏（`isRapidTurn`）：单独一下演完整卷页，连着点就不演了——第一下起手，
 /// 后面每一下直接落页。理由很直白：卷页一段 0.35s，连着点五下要等将近两秒，
 /// 而读者点得比纸快的时候，看到的就是「点了没反应」。宁可少演几段动画，
 /// 也不要让手等纸。
+///
+/// 双页那一档的卷页是 0.41s 整趟（探针在进程内量 `curl-inputTime` 那组动画量的），
+/// 而且**拧不动**：`pager.view.layer.speed` 对它没有任何影响（单页那一档可以），
+/// 所以别再往「翻页提速」上想路子，要快只能换渲染层。
 struct CurlPageTurner<Sheet: View>: UIViewControllerRepresentable {
+
+    /// 这一张纸摊成左右两面（中缝在纸正中）还是就一面。
+    ///
+    /// 由外层按纸宽定，不看设备型号。**只能在 init 时定**：`spineLocation` 走
+    /// `UIPageViewControllerOptionSpineLocationKey`，那是构造参数，装好以后不许再改
+    /// （改了供页的成对数就对不上，UIKit 直接报异常）。所以换档是外层拿 `.id` 把这个容器
+    /// 整个换掉——换档本来就要重新分页，纸的版式全变了，重建不是代价而是对得上。
+    let isSpread: Bool
 
     /// 这一段页序的第一面是第几面。默认 0（一整份页序从头开始）。
     ///
@@ -83,6 +108,9 @@ struct CurlPageTurner<Sheet: View>: UIViewControllerRepresentable {
     var onUserTurn: ((Int) -> Void)? = nil
 
     /// 第 index 面。控制器按窗口缓存复用，所以它必须是纯函数。
+    ///
+    /// 双页时可能拿到**区间外**的那个下标（0 或 1）：那是摊不满时补上的半张纸，
+    /// 外层要交一张空白纸，不能拿它去印正文某一页（见口径 ④）。
     let content: (Int) -> Sheet
 
     func makeCoordinator() -> Coordinator {
@@ -93,10 +121,17 @@ struct CurlPageTurner<Sheet: View>: UIViewControllerRepresentable {
         context: Context
     ) -> UIPageViewController {
 
+        // 中缝在哪儿只有这一处能说：`.mid` = 纸正中，一次供两面；`.min` = 左边缘，一次一面。
         let pager = UIPageViewController(
             transitionStyle: .pageCurl,
             navigationOrientation: .horizontal,
-            options: nil
+            options: isSpread
+                ? [
+                    .spineLocation: NSNumber(
+                        value: UIPageViewController.SpineLocation.mid.rawValue
+                    )
+                ]
+                : nil
         )
 
         pager.dataSource = context.coordinator
@@ -170,27 +205,88 @@ extension CurlPageTurner {
 
         /// 两下点击挨得比这个近就算连点：后到的那一下不再演整段卷页，直接落页。
         ///
-        /// 卷页本身 0.35s 上下，所以这个数比它略大一点——正好卡在
-        /// 「上一下的纸刚落地又来一下」这个手感上。再短就抓不到连点，
-        /// 再长就成了「正常速度翻页也没动画」。
+        /// 它要比那一段动画略长一点——正好卡在「上一下的纸刚落地又来一下」这个手感上。
+        /// 再短就抓不到连点，再长就成了「正常速度翻页也没动画」。动画多长是量出来的：
+        /// 单页那一档 0.35s 上下，双页（`.mid`）整趟 0.41s（探针在进程内采 `curl-inputTime`
+        /// 那组动画量的），所以门槛跟着档走。
         ///
         /// 写成计算属性而不是 `static let`：这个 Coordinator 是泛型类型
         /// （`Coordinator<Sheet>`），泛型里不许有 static 存储属性。
-        private var rapidWindow: TimeInterval { 0.4 }
+        private var rapidWindow: TimeInterval {
+            isSpread ? 0.5 : 0.4
+        }
 
         private var pages: [Int: UIHostingController<Sheet>] = [:]
 
         /// 已经钉给这一层子树的外观。只有它变了才去刷 pager 和缓存里的每一面纸。
         private var appliedAppearance: UIUserInterfaceStyle = .unspecified
 
+        // MARK: 摊（一次转场的单位）
+
+        /// 一摊 = 单页时的一面纸，双页时的左右两面。
+        ///
+        /// 容器里所有记账都在这个单位上：`settled` / `inFlight` / `ours` 存的还是外面交进来
+        /// 的那个面的下标，但**比较一律先换算成摊**。不按面的下标比的话，双页时声音推进到
+        /// 右边那一面（下标 +1，摊没变）会被当成一次翻页——纸在原地自己卷一趟。
+        ///
+        /// 配对按下标的奇偶、偶数在左（文件头口径 ④）。这里用位移而不是除法：
+        /// `>>` 在负数上就是向下取整，上一章的纸贴进来把起点挪成负数时配对照样稳；
+        /// `/` 会朝零截，-1 就和不存在的 -0 撞成一摊了。
+        private var isSpread: Bool {
+            parent?.isSpread ?? false
+        }
+
+        /// 第 index 面属于第几摊。
+        private func unit(of index: Int) -> Int {
+            isSpread ? index >> 1 : index
+        }
+
+        /// 第 unit 摊包含哪些面。双页恒两个，其中可能有一个是两头补位的白纸。
+        private func leaves(of unit: Int) -> [Int] {
+            guard isSpread else { return [unit] }
+            return [unit << 1, (unit << 1) + 1]
+        }
+
+        private func sameUnit(_ a: Int, _ b: Int) -> Bool {
+            unit(of: a) == unit(of: b)
+        }
+
+        /// 这一面摊不摊得出来。单页就是页序本身；双页还包含两头那半张补位纸——
+        /// 它虽然没字，但它那一摊里有真纸，所以得给它造一个控制器。
+        private func presentable(_ index: Int) -> Bool {
+
+            guard let parent, parent.pageCount > 0 else { return false }
+
+            let last = parent.startIndex + parent.pageCount - 1
+
+            guard isSpread else {
+                return index >= parent.startIndex && index <= last
+            }
+
+            return unit(of: index) >= unit(of: parent.startIndex)
+                && unit(of: index) <= unit(of: last)
+        }
+
+        /// 摊里那两面折回一个「真的在页序里」的下标。
+        ///
+        /// 必须折：两头补位的白纸不属于页序，把它原样报给外层，`pageBinding` 那一头
+        /// 一看下标出了正文那段就当跨章处理（`crossIfNeeded`），表现是「翻到书的头一页
+        /// 突然跳去上一章」。
+        private func anchored(_ index: Int) -> Int {
+
+            guard let parent, parent.pageCount > 0 else { return index }
+
+            return min(
+                max(index, parent.startIndex),
+                parent.startIndex + parent.pageCount - 1
+            )
+        }
+
         // MARK: 供页
 
-        private func controller(at index: Int) -> UIViewController? {
+        private func controller(at index: Int) -> UIHostingController<Sheet>? {
 
-            guard let parent,
-                  index >= parent.startIndex,
-                  index < parent.startIndex + parent.pageCount
-            else { return nil }
+            guard let parent, presentable(index) else { return nil }
 
             if let hit = pages[index] {
                 return hit
@@ -210,6 +306,29 @@ extension CurlPageTurner {
             pages[index] = host
 
             return host
+        }
+
+        /// 第 unit 摊要交出去的那几个控制器：单页一个，双页恒两个。
+        ///
+        /// 双页那一档 UIKit 死要求两个（探针量过：`.mid` 下递 1 个直接抛
+        /// "The number of provided view controllers (1) doesn't match the number required (2)"），
+        /// 所以两头补位的那半张纸也得有控制器。
+        ///
+        /// 这一摊里一张真纸都没有就交 nil——`viewControllerBefore/After` 靠那条报
+        /// 「页序到头了」，读者不能再往这头翻。
+        private func controllers(forUnit unit: Int) -> [UIViewController]? {
+
+            let wanted = leaves(of: unit)
+
+            guard wanted.contains(where: presentable) else { return nil }
+
+            let sheets = wanted.compactMap { controller(at: $0) }
+
+            // 走到这里还想不出纸（parent 还没挂上）：按这一摊该有几面补几个空壳。
+            // 少递一个在 `.mid` 那一档就是抛异常，宁可白一张纸。
+            return sheets.isEmpty
+                ? wanted.map { _ in UIViewController() }
+                : sheets
         }
 
         private func index(of controller: UIViewController) -> Int? {
@@ -273,8 +392,11 @@ extension CurlPageTurner {
                 contentDirty = true
             }
 
-            if inFlight != nil {
-                if index != inFlight {
+            if let flying = inFlight {
+                // 演着的时候又来了一次要求。比的是摊：双页时声音推进到这一摊的右面
+                // （下标 +1、摊没变）不算「还要翻页」，攒进队列会让纸在落定以后
+                // 自己再卷一趟。
+                if !sameUnit(index, flying) {
                     queued = index
                     lastTurnRequestAt = Date()
                 }
@@ -283,7 +405,7 @@ extension CurlPageTurner {
 
             rehostCachedPages()
 
-            guard index != settled else { return }
+            guard !sameUnit(index, settled) else { return }
 
             // 连点判定要在记账之前问：记完再问，问到的就是「这一下离它自己 0 秒」。
             let rapid = isRapidTurn()
@@ -293,7 +415,7 @@ extension CurlPageTurner {
             present(
                 index,
                 direction: index > settled ? .forward : .reverse,
-                animated: abs(index - settled) == 1 && !rapid,
+                animated: abs(unit(of: index) - unit(of: settled)) == 1 && !rapid,
                 in: pager
             )
 
@@ -308,9 +430,7 @@ extension CurlPageTurner {
             in pager: UIPageViewController
         ) {
 
-            let first = controller(at: index) ?? UIViewController()
-
-            // 只走一格才演卷页：恢复进度、目录点章会一次跳几十面，
+            // 只走一摊才演卷页：恢复进度、目录点章会一次跳几十面，
             // 给那种跳转配一次卷页，看着就是「跳页还带了个动画」。
             //
             // 我们自己按下去的那一次一律先记账，演不演动画都记：不演动画的那一次
@@ -329,14 +449,56 @@ extension CurlPageTurner {
             }
 
             pager.setViewControllers(
-                [first],
+                controllers(forUnit: unit(of: index)) ?? [UIViewController()],
                 direction: direction,
                 animated: animated,
-                completion: nil
+                completion: { _ in
+                    // **落定只认这里**。代码发起的卷页 UIKit 不给 `didFinishAnimating`
+                    // ——探针实测（`.probe/curl-callback-probe.swift`，iOS 26.5 模拟器）：
+                    // 四次 `setViewControllers(animated:true)` 的 completion 全在 0.41s 回来，
+                    // delegate 一条都没打。以前靠 0.8s 兜底计时落定，那 0.8s 里 `inFlight`
+                    // 一直挂着，读者每一下点击都只被攒进 `queued`——纸不动，等到兜底才
+                    // 不演动画地跳过去，表现就是「点右侧没反应」。
+                    //
+                    // 兜底计时留着：completion 也可能不来（页面切走、动画被系统掐掉），
+                    // 那时它是唯一能把 `inFlight` 放下的东西。
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            self.settle(at: index, in: pager)
+                        }
+                    }
+                }
             )
 
-            // 剪枝放在这次转场之后：窗口按「纸上现在是哪面」留，演到一半的那两面留在里面。
-            prune(around: index)
+            // 剪枝放在这次转场之后：窗口按「纸上现在是哪摊」留，演到一半的那两摊留在里面。
+            prune(around: unit(of: index))
+        }
+
+        /// 纸停在某一面上：把「在飞」放下、记住落点，再把攒着的下一次接上。
+        ///
+        /// 只认自己按下去的那一次（`inFlight == index`）：读者拖着纸演到一半时，
+        /// `willTransitionTo` 已经把 `inFlight` 改成读者要去的那一面，这里就不该抢。
+        ///
+        /// **不动 `ours`**：那面记号要留到下一次转场起手才换。留着它是安全的那一侧
+        /// ——万一某个系统版本对代码发起的卷页既给 completion 又给 `didFinishAnimating`，
+        /// 后到的那一条会看见「落点 == 记号」而不回写、不解跟随锁；抹掉它就把我们自己
+        /// 那一次认成读者拖的了，白解一次跟随（「页自己跳了一下，之后再也不跟音频」）。
+        /// 而读者真拖的那一下必然落在**别的摊**上（同一摊拖不动），记号挡不到它。
+        private func settle(
+            at index: Int,
+            in pager: UIPageViewController
+        ) {
+
+            guard inFlight == index else { return }
+
+            inFlight = nil
+            settleTimer?.cancel()
+            settleTimer = nil
+            settled = index
+
+            rehostCachedPages()
+
+            flushQueue(in: pager)
         }
 
         /// 把外观钉到整棵卷页子树上：pager 自己 + 缓存里的每一面纸。
@@ -394,14 +556,14 @@ extension CurlPageTurner {
 
             queued = nil
 
-            guard target != settled, inFlight == nil else { return }
+            guard !sameUnit(target, settled), inFlight == nil else { return }
 
             present(
                 target,
                 direction: target > settled ? .forward : .reverse,
                 // 能攒进队列就说明纸还在演的时候读者又点了一下——那正是连点，
                 // 落地这一下不再演一遍。
-                animated: abs(target - settled) == 1 && !isRapidTurn(),
+                animated: abs(unit(of: target) - unit(of: settled)) == 1 && !isRapidTurn(),
                 in: pager
             )
         }
@@ -412,12 +574,15 @@ extension CurlPageTurner {
 
                 guard let self, self.inFlight == index else { return }
 
-                // 回调没来。别问纸上是什么样子了，直接把它摆成要去的那一面。
+                // 连 completion 都没来（正常路径落定在它那里，见 `present`）。
+                // 别问纸上是什么样子了，直接把它摆成要去的那一摊。
                 print("[Turn] 落页回调没来：按第 \(index) 面落定")
 
                 self.present(
                     index,
-                    direction: index >= self.settled ? .forward : .reverse,
+                    direction: unit(of: index) >= unit(of: self.settled)
+                        ? .forward
+                        : .reverse,
                     animated: false,
                     in: pager
                 )
@@ -429,7 +594,8 @@ extension CurlPageTurner {
             settleTimer?.cancel()
             settleTimer = work
 
-            // 卷页本身 0.35s 上下，留一倍余量：抢在动画演完之前落定就是自己把纸拍平。
+            // 卷页本身 0.35s 上下（双页那一档探针量到 0.41s），留一倍余量：
+            // 抢在动画演完之前落定就是自己把纸拍平。
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + 0.8,
                 execute: work
@@ -438,15 +604,19 @@ extension CurlPageTurner {
 
         private func prune(around center: Int) {
 
-            // 卷起来那一瞬间要用到下一页，往后多留一面。
-            var window = Set((center - 1)...(center + 2))
+            // `center` 是一摊。卷起来那一瞬间要用到下一摊的纸，所以往后多留一摊。
+            var window: Set<Int> = []
 
-            // 纸上和演到一半的那两面不能丢：控制器一被扔掉，`index(of:)` 就认不出
-            // 落页是第几面，页码回写不上——表现是「翻了页但下面进度还停在原来那页」。
-            window.insert(settled)
-            window.insert(settled + 1)
+            for offset in -1...2 {
+                window.formUnion(leaves(of: center + offset))
+            }
+
+            // 纸上和演到一半的那两摊不能丢：控制器一被扔掉，`index(of:)` 就认不出
+            // 落页是哪一摊，页码回写不上——表现是「翻了页但下面进度还停在原来那页」。
+            window.formUnion(leaves(of: unit(of: settled)))
+
             if let flying = inFlight {
-                window.insert(flying)
+                window.formUnion(leaves(of: unit(of: flying)))
             }
 
             pages = pages.filter { window.contains($0.key) }
@@ -458,7 +628,7 @@ extension CurlPageTurner {
         /// 两边都认就变成点一下翻两页。
         ///
         /// 只看这一层和它的直接子视图。再往里就是 `UIHostingController` 的正文，
-        /// 那上面的点击是「点哪句从哪句朗读」，碰不得。
+        /// 那上面的点击归 SwiftUI（单击弹按钮、双击读那一句），碰不得。
         private func suppressEdgeTap(
             in pager: UIPageViewController
         ) {
@@ -475,6 +645,15 @@ extension CurlPageTurner {
         }
 
         // MARK: DataSource
+        //
+        // 协议只让一次交**一个**控制器（`viewControllerBefore/After` 的返回类型就是
+        // `UIViewController?`），所以走纸这条路只能一面一面走：UIKit 拿「这一面后面是谁」
+        // 往下问，配对是它自己按问到的顺序凑的。我们这边的规矩（偶数面在左、两面一摊）
+        // 靠两件事撑住：`setViewControllers` 每次都交整摊（程序翻页），以及下标连续。
+        //
+        // 拖动那一下 UIKit 到底一次走一摊还是一面，探针造不出手指，验不了：
+        // 所以落定那一条会打 `[Turn]` 把摊的奇偶报出来（见 `didFinishAnimating`）。
+        // 真机上要是从来没有「没落在头一面」那一条，就是配对没错。
 
         func pageViewController(
             _ pager: UIPageViewController,
@@ -483,7 +662,7 @@ extension CurlPageTurner {
 
             guard let at = index(of: controller) else { return nil }
 
-            return self.controller(at: at - 1)
+            return neighbor(of: at, forward: false)
         }
 
         func pageViewController(
@@ -493,7 +672,23 @@ extension CurlPageTurner {
 
             guard let at = index(of: controller) else { return nil }
 
-            return self.controller(at: at + 1)
+            return neighbor(of: at, forward: true)
+        }
+
+        /// 走纸时的下一面 / 上一面。到头的那一条按**摊**判：那一摊里一张真纸都没有，
+        /// 就报 nil 说「这头翻不动了」——不然读者能一直翻进补位白纸里，而那里面什么都没有。
+        private func neighbor(
+            of index: Int,
+            forward: Bool
+        ) -> UIViewController? {
+
+            let next = index + (forward ? 1 : -1)
+
+            guard presentable(next),
+                  controllers(forUnit: unit(of: next)) != nil
+            else { return nil }
+
+            return controller(at: next)
         }
 
         // MARK: Delegate
@@ -514,7 +709,8 @@ extension CurlPageTurner {
 
             inFlight = index
 
-            guard index != ours else { return }
+            // 是我们自己按下去的那一摊：兜底计时留着（那是同一段动画，不是读者拖的）。
+            if let ours, sameUnit(index, ours) { return }
 
             settleTimer?.cancel()
             settleTimer = nil
@@ -540,13 +736,30 @@ extension CurlPageTurner {
             if let landed = pager.viewControllers?.first.flatMap({ index(of: $0) }) {
                 settled = landed
 
-                if completed, landed != ours {
+                // 取证（#169）：双页时纸落定应该落在「一摊的头一面」（偶数面在左，口径 ④）。
+                // 没落在头一面上就意味着 UIKit 那一次拖走的不是一摊而是一面——配对得改。
+                // 探针造不出手指，这条只能等真机日志坐实，所以它每次都报，不判错。
+                if isSpread, (landed & 1) != 0 {
+                    print(
+                        "[Turn] 双页落点不在摊的头一面：landed=\(landed) "
+                            + "纸上=\(pager.viewControllers?.compactMap { index(of: $0) } ?? [])"
+                    )
+                }
+
+                // 比的是摊，不是面：双页时我们交出去的下标可能是摊里右边那一面（页码跟的是
+                // 声音的落点），而落定以后 `viewControllers.first` 是左边那一面。按面比就
+                // 把我们自己按的那一下认成了读者翻的，白解一次跟读的跟随锁。
+                if completed, unit(of: landed) != ours.map({ unit(of: $0) }) {
                     // 读者自己翻的那一下：演到一半攒下的跟随安排不作数了，
                     // 手比声音先到，落哪儿就报哪儿（见 `ReaderView.noteManualTurn`）。
                     queued = nil
 
-                    parent?.page = landed
-                    parent?.onUserTurn?(landed)
+                    // 报出去的下标必须真的在页序里：摊里补位的那半张白纸不属于页序，
+                    // 原样报上去会被 `pageBinding` 当成跨章落点。
+                    let shown = anchored(landed)
+
+                    parent?.page = shown
+                    parent?.onUserTurn?(shown)
                 }
             }
 

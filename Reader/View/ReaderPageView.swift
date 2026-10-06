@@ -45,6 +45,12 @@ struct ReaderPageBody: View {
     /// 口径——两边各算各的，栏尾就溢出。
     let contentWidth: CGFloat
 
+    /// 左右**各**让开的宽，由分页端算好随页交过来（`PageLayout.sideMargin`）。
+    /// 渲染端不再自己量字宽：它垫的这一条和分页端抽掉的那一条必须是同一个数，
+    /// 不然版心就对不上纸宽，正文就此偏一边（#168）。
+    /// 双页时它是**这一面**的边距，靠中缝那一条就是中缝阴影的宽（见 `crease`）。
+    let sideMargin: CGFloat
+
     /// 底色与字色。不参与测量，只参与渲染。
     let theme: ReaderTheme
 
@@ -54,13 +60,20 @@ struct ReaderPageBody: View {
     /// 正在朗读的句子下标；nil 表示本页没有正在播的句子
     let activePosition: Int?
 
+    /// 这是不是一张有意留白的补位纸（双页摊不满时那半张）。
+    ///
+    /// 要单独说一声，因为「页上没字」在这一层有两种：空章（图片页）和补位白纸。
+    /// 前者要告诉读者这一章真的没有可朗读的正文，后者什么都不必说——它就该是
+    /// 一张白纸，冒出那行提示就成了 bug。
+    var blank = false
+
     let tap: (Int) -> Void
 
     var body: some View {
 
-        // 一栏一栏并排放。外层的 `.padding(.horizontal, 22)` / `.padding(.vertical, 18)`
-        // 一点没动：分栏切的是版心里面，纸的四边还是那四个数——栏宽 + 栏空正好等于
-        // `contentWidth`，所以左右边距在单栏和两栏下是同一个 22pt。
+        // 一栏一栏并排放。左右那条边距是分页端量完随页交过来的 `sideMargin`（设计边距
+        // 加上一行让出的那一个字，左右各一半），上下还是那 18pt：分栏切的是版心里面，
+        // 栏宽 + 栏空正好等于 `contentWidth`，所以纸的四边和正文的宽对得上、正文在正中。
         HStack(
             alignment: .top,
             spacing: ReaderTypography.columnGutter(body: bodySize)
@@ -76,7 +89,7 @@ struct ReaderPageBody: View {
         }
         .padding(
             .horizontal,
-            ReaderTypography.horizontalMargin
+            sideMargin
         )
         .padding(
             .vertical,
@@ -161,7 +174,7 @@ struct ReaderPageBody: View {
             spacing: 0
         ) {
 
-            if column.isEmpty, sentences.isEmpty {
+            if column.isEmpty, sentences.isEmpty, !blank {
 
                 // 只在「这一章真的没有正文」时说这句话。首次布局还没跑完时
                 // 页也是空的，那种时候留白，别闪一下提示。
@@ -268,6 +281,19 @@ struct ReaderPageBody: View {
     }
 }
 
+/// 中缝贴着这一面的哪条竖边。
+///
+/// 不叫 SwiftUI 的 `Edge`：那个枚举在这个 SDK 上只给 `Edge.Horizontal` 做参数用，
+/// 类型本身拿不到（`.Horizontal` 不是它的成员），而这里要的本来就只是「左右」这一对。
+enum ReaderSpineEdge: Equatable {
+
+    /// 缝在我左边：我是摊的右半。
+    case leading
+
+    /// 缝在我右边：我是摊的左半。
+    case trailing
+}
+
 /// 一张纸上「正文那一块」的边界。
 ///
 /// 分页量的高度和纸上渲染的高本来就是同一个数，所以只在这里写一次减法：
@@ -300,6 +326,59 @@ enum ReaderPageBox {
     }
 }
 
+/// 这一屏的纸摊成几面，以及**交给分页器的那一块地方**。
+///
+/// 判据只有这张纸自己的尺寸，一处都不看设备型号（要求四）：`spreadAllowed` 问摊开以后每一面
+/// 还容不容得下 `minSpreadLetters` 个字、以及每一面还是不是一页书的形状（高 ≥ 宽，
+/// 手机横过来那条扁字幕就是被后一条挡住的）。所以转屏、分屏、台前调度、Mac 上那个能拉的
+/// 窗口都自动按实际尺寸换档——同一条式子也保证换档用的宽和分页用的宽是同一个数，
+/// 不会出现「判成双页了，可每一面排不下」。
+///
+/// 单独写一处是因为这个结论有三个问它的地方：卷页容器（`isSpread`，决定中缝在纸正中还是
+/// 左边缘）、分页（吃 `leaf` 那份宽）、点两侧翻页（一翻是一面还是一摊）。各算各的迟早分家。
+@MainActor
+struct ReaderPaper {
+
+    /// 一面纸的地方：双页时是整块地方对半切出来的那半张，单页时就是整块。
+    ///
+    /// 分页器和纸上渲染的都取它。`ReaderPageView` 那边不用传宽：hosting 视图实测到的
+    /// 就是 UIKit 分给这一面的那段，两边本来就是同一个数。
+    let leaf: CGSize
+
+    /// 摊成左右两面，还是一面。
+    let isSpread: Bool
+
+    /// 双页时一次翻过的面数：一摊两面。
+    ///
+    /// 点两侧翻页按它走步长——只走一面的话，落点还在同一摊里，容器比的是摊，
+    /// 一看「纸已经在这摊上了」就什么也不演，表现是「点了没反应」。
+    var leafStep: Int {
+        isSpread ? 2 : 1
+    }
+
+    init(
+        size: CGSize,
+        body: CGFloat
+    ) {
+
+        let area = ReaderPageBox.bodyArea(size)
+
+        let spread = ReaderTypography.spreadAllowed(
+            areaWidth: area.width,
+            areaHeight: area.height,
+            letter: ReaderBlock.letterWidth(body: body)
+        )
+
+        self.isSpread = spread
+        self.leaf = CGSize(
+            width: spread
+                ? ReaderTypography.leafWidth(areaWidth: area.width)
+                : area.width,
+            height: area.height
+        )
+    }
+}
+
 /// 一张纸。翻页在 `CurlPageTurner` 手里：卷起来那一瞬间这一面是被单独摘出去渲染的
 /// 一张纸，所以整屏都得是纸——灵动岛和 home 指示条那两段也跟着卷，
 /// 不然翻起来像「只有正文在动」。
@@ -326,6 +405,10 @@ struct ReaderPageView: View {
     var columnCuts: [Int] = [0]
     var columnStretch: [CGFloat] = [0]
 
+    /// 左右各让开的宽（`PageLayout.sideMargin`）。这一页的版心宽就是从纸宽里减掉它两遍，
+    /// 所以它必须和分页端量高时用的是同一个数。
+    let sideMargin: CGFloat
+
     let theme: ReaderTheme
 
     let chapterTitle: String
@@ -339,6 +422,19 @@ struct ReaderPageView: View {
 
     /// 顶栏唤出来时让它淡掉：同一位置摆两行章名看着就是糊的。
     let headOpacity: Double
+
+    /// 这是不是一张有意留白的补位纸（双页摊不满时那半张，见 `CurlPageTurner` 口径 ④）。
+    var blank = false
+
+    /// 中缝在我这一面的哪一条边上；单页时 nil。
+    ///
+    /// 有了它才画得出那道阴影：`.mid` 那一档 UIKit **不给静态的中缝阴影**（探针量过：
+    /// 两面纸摊平时中缝是平的，只有卷起来过程中弧上有一道高光）。真书两面之间是有那道
+    /// 凹下去的灰的，所以这一层得自己画。
+    ///
+    /// 它只盖自己那一条边距：宽就是 `sideMargin`，版心里的墨一条都不碰——中缝阴影压在字上
+    /// 就成了「靠中缝那一列字发暗」。
+    var spineEdge: ReaderSpineEdge?
 
     /// 屏幕顶 → 正文顶、正文底 → 屏幕底：全部走 `ReaderPageBox`，
     /// 和 `pageReader` 量的分页高是同一个数。以前这里写作
@@ -373,10 +469,12 @@ struct ReaderPageView: View {
                     lineScale: lineScale,
                     columnCuts: columnCuts,
                     columnStretch: columnStretch,
-                    contentWidth: paper.size.width - ReaderTypography.horizontalMargin * 2,
+                    contentWidth: paper.size.width - sideMargin * 2,
+                    sideMargin: sideMargin,
                     theme: theme,
                     chapterTitle: chapterTitle,
                     activePosition: activePosition,
+                    blank: blank,
                     tap: tap
                 )
                 .frame(
@@ -400,7 +498,55 @@ struct ReaderPageView: View {
                 .easeOut(duration: 0.22),
                 value: headOpacity
             )
+
+            // 中缝那道凹下去的灰：只在双页时画，压在靠中缝的那一条边距上。
+            // 排在最后（页眉之上）是有意的——它 `allowsHitTesting(false)`，不吃点击，
+            // 而压在章名那行的边上比让字浮在阴影之上更像书。
+            if let spineEdge {
+                crease(
+                    edge: spineEdge
+                )
+            }
         }
         .ignoresSafeArea()
+    }
+
+    /// 靠中缝那一条边的阴影：从缝那儿最深，往版心方向淡出去，宽度就是这一面的 `sideMargin`。
+    ///
+    /// 只写这一处，两面纸各画各的一半：左边那面的黑贴着它的右边、右边那面的黑贴着它的左边，
+    /// 在中缝正好接上——不需要有一面纸知道自己是「左边那面」。
+    private func crease(
+        edge: ReaderSpineEdge
+    ) -> some View {
+
+        LinearGradient(
+            stops: [
+                .init(
+                    color: theme.crease,
+                    location: 0
+                ),
+                .init(
+                    color: theme.crease.opacity(0.45),
+                    location: 0.35
+                ),
+                .init(
+                    color: .clear,
+                    location: 1
+                )
+            ],
+            startPoint: edge == .leading ? .leading : .trailing,
+            endPoint: edge == .leading ? .trailing : .leading
+        )
+        .frame(
+            width: sideMargin
+        )
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: .infinity,
+            alignment: edge == .leading ? .leading : .trailing
+        )
+        .allowsHitTesting(
+            false
+        )
     }
 }

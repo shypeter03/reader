@@ -67,8 +67,38 @@ enum ReaderTypography {
         size * 0.35
     }
 
+    // MARK: - 边距
+
+    /// 设计边距：纸上那一块白**至少**让开这么多。纸上一条边距实际让多少问 `sideMargin`。
     static let horizontalMargin: CGFloat = 22
     static let verticalMargin: CGFloat = 18
+
+    /// 一张纸左右**各**让开的宽：设计边距 + 一行让出的那一个字，摊成两半。
+    ///
+    /// 为什么不直接是 `horizontalMargin` 那一个数（#168）：读者要的「每行少一个字」得按
+    /// 排版引擎量出来的推进抽（`ReaderBlock.letterWidth`），而抽掉的宽不许变成行尾的空洞，
+    /// 要还给两条边距。这里只写上「一半」这一笔账：`columns` 栏就是 `columns` 行各少一个，
+    /// 从版心抽走的总宽是一个字 × 栏数，对半摊到左右两条外边距，所以每边各多半个字 × 栏数。
+    ///
+    /// 恒对称（左右是同一个数），所以正文永远落在纸的正中。代数和闭合：
+    /// `2 × sideMargin + 栏宽 × 栏数 + 栏空 × (栏数 − 1) = 纸宽`。
+    ///
+    /// 单栏和两栏的两个外边距本来就不该相等（22 + 半个字 vs 22 + 一个字）：两栏那张纸
+    /// 一行要少两个字，宽是从版心里抽的，不是从纸的四边上凭空抠的。
+    static func sideMargin(letter: CGFloat, columns: Int) -> CGFloat {
+        horizontalMargin + letter * CGFloat(max(columns, 1)) / 2
+    }
+
+    /// 版心宽：纸上正文那一整块的宽，已经让开两条 `sideMargin`。
+    ///
+    /// 分页量高和渲染排栏都问这一个数。下限 40 是兜「纸窄过两条边距」的越界输入
+    /// （分屏拖到最窄、转场中间那一帧），那种纸上排不出字，但不能给负宽。
+    static func contentWidth(areaWidth: CGFloat, letter: CGFloat, columns: Int) -> CGFloat {
+        max(
+            40,
+            areaWidth - sideMargin(letter: letter, columns: columns) * 2
+        )
+    }
 
     // MARK: - 分栏
 
@@ -88,8 +118,8 @@ enum ReaderTypography {
         body * 1.5
     }
 
-    /// 一栏的宽。`columns` 栏加 `columns - 1` 条栏空正好铺满 `contentWidth`，
-    /// 所以 `horizontalMargin` 那 22pt 一点没动——分栏切的是版心里面，不是纸的四边。
+    /// 一栏的宽。`columns` 栏加 `columns - 1` 条栏空正好铺满 `contentWidth`——
+    /// 分栏切的是版心里面，不是纸的四边；两条外边距由 `sideMargin` 按栏数一起给。
     static func columnWidth(
         contentWidth: CGFloat,
         columns: Int,
@@ -104,9 +134,74 @@ enum ReaderTypography {
 
     /// 这一张纸摊成几栏。刻意封顶 2：要的是「从中间分成两边」，三栏在横屏上是把一页切三片，
     /// 读者的眼睛得先跨过一整栏的空白才接着读，那不是读书。
-    static func columnCount(contentWidth: CGFloat, body: CGFloat) -> Int {
-        columnWidth(contentWidth: contentWidth, columns: 2, body: body)
-            >= body * CGFloat(minColumnLetters) ? 2 : 1
+    ///
+    /// 判据问的是**摊成两栏之后**那一栏有多宽，也就是带着两栏那一条 `sideMargin` 账一起判
+    /// （#168：两栏的纸每边各让一个字，不是 22pt）。拿收窄前的宽判会在临界纸宽上多开一栏，
+    /// 而那一栏实际只剩 15 个字——正撞在 `minColumnLetters` 想挡住的那一档上。
+    /// 先假设两栏、不合格退回单栏，所以这是一次定点，不用迭代。
+    static func columnCount(areaWidth: CGFloat, body: CGFloat, letter: CGFloat) -> Int {
+        columnWidth(
+            contentWidth: contentWidth(areaWidth: areaWidth, letter: letter, columns: 2),
+            columns: 2,
+            body: body
+        ) >= body * CGFloat(minColumnLetters) ? 2 : 1
+    }
+
+    // MARK: - 双页
+
+    /// 一张纸摊成左右两面时，**每一面**一行至少要容得下这么多个字才许摊。
+    ///
+    /// 为什么按「摊开之后每一面一行的字数」判，而不是按设备型号、不按 idiom、也不按一条
+    /// 屏幕宽度：双页要的观感是摊开一本书，而它的下限其实是可读性。摊开之后每一面如果比
+    /// 手机上那一页还窄，读者就是在平板上看两页手机——中缝两边各剩十几个字，行尾那点洞
+    /// 两端对齐补不平（`minColumnLetters` 要挡的就是那一档）。手机那一页现在排 17 个字
+    /// （393pt 的纸），所以门槛定在「每一面都比手机那一页宽一截」：24 个字。
+    ///
+    /// 这条式子里只有「纸有多宽多高」和「一个字有多宽」，宽度那一条跟着字号走，所以大字号
+    /// 自动退回单页（1.5× 那一档要 1500pt 上下的纸，没有机器够得着），分屏、台前调度、
+    /// Mac 上那个可拉的窗口也自动按实际尺寸决定——不需要在任何地方判断「这是什么设备」
+    /// （判据合起来在 `spreadAllowed`，形状那一条见它的第二段）。
+    static let minSpreadLetters = 24
+
+    /// 双页时一面有多宽。UIKit 在 `.mid` 那一档是把 `pager.view.bounds` 从中缝对半切给
+    /// 两面纸（探针量过：1376 的纸给出 0…688 与 688…1376 两面），所以这里就是它的一半。
+    ///
+    /// **刻意不取整**：分页量的宽和那一面上 hosting 视图实测到的宽必须是同一个数，
+    /// 差半pt 就是「量的排得下、纸上掉一行」（`renderGuard` 那笔账只有 0.5pt）。
+    static func leafWidth(areaWidth: CGFloat) -> CGFloat {
+        areaWidth / 2
+    }
+
+    /// 这张纸摊不摊得开两面。和 `columnCount` 同一个套路：先按摊开算，不合格就是不合格，
+    /// 不用迭代。
+    ///
+    /// `letter` 必须是排版引擎量出来的实际推进宽（`ReaderBlock.letterWidth`），不是字号：
+    /// 「一行几个字」只能按真正的推进数（19pt 在探针那台机器上实测 19.36pt）。
+    ///
+    /// 边距按**单栏**那一面算：摊开之后一面剩下的宽已经不容第二栏（两栏的条件
+    /// `columnCount` 会在那一面的宽上再问一遍，量的是摊开后的纸），所以这里欠的
+    /// 就是 `columns: 1` 那一份账——两条边距各 22 + 半个字。
+    ///
+    /// 两道闸门，都在问几何，没有一处问机型：
+    ///
+    /// 1. **一面容不容得下 `minSpreadLetters` 个字**——见上面那条。
+    /// 2. **两面各自还是不是一页书的形状**（高 ≥ 宽）。为什么宽度那道闸不够：手机横过来
+    ///    那张纸是 852×297，一刀两半得到两片 426×297 的**横条**——扁过任何一本书，那是
+    ///    一条被腰斩的字幕，不是摊开的书。字号调到最小那档（0.7×）时那片横条每面能塞
+    ///    27 个字，只按宽度判就会在手机上开双页，而要求四是「iPhone 保持单页」。
+    ///    形状这道闸不认机型，任何又扁又宽的可拉窗口都走同一条式子；而真机摊得开的那几档
+    ///    （iPad 11 横 597×738、iPad Pro 13 横 683×928、iPad mini 横 566×648）
+    ///    高都大于宽，一条都没被它挡掉。
+    static func spreadAllowed(
+        areaWidth: CGFloat,
+        areaHeight: CGFloat,
+        letter: CGFloat
+    ) -> Bool {
+        let leaf = leafWidth(areaWidth: areaWidth)
+        guard leaf <= areaHeight else { return false }
+        return leaf
+            - sideMargin(letter: letter, columns: 1) * 2
+            >= letter * CGFloat(minSpreadLetters)
     }
 
     /// 一块字落纸占的高，比 `ReaderBlock.metrics` 量到的最多多出这么多（点）。

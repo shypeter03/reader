@@ -91,7 +91,13 @@ final class CharacterRoster: @unchecked Sendable {
     /// 残渣就此过得了入档闸门（说≥2 且被称呼≥1），档案里同时躺着「王林=Dylan」和
     /// 「王林愣=旁白嗓」两条。现在三字以上的串后面紧跟只有动词才跟得上的字
     /// （了／着／过／得／在）时，那一处不算它自己的称呼证据。
-    static let scheme = 11
+    ///
+    /// 12：跟着**入档名单**作废重扫。这一轮名单变化不在档案自己的规则上，而在喂它的那些句子：
+    /// 放宽那一步的开口闸门换用了判开口的表（``DialogueAttribution/relaxationAnchors``），
+    /// 「笑对／相对／出言／应声／失笑」那一批台词第一次有了说话人——「说过话」记到真名头上，
+    /// 入档闸门（说≥2 且被称呼≥1）从此过得去。旧档案是按缺了那一批的账攒出来的，
+    /// 留着就是同一个人这句有嗓、下一句没嗓。
+    static let scheme = 12
 
     struct Person: Codable, Hashable {
         let name: String

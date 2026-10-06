@@ -79,6 +79,31 @@ enum ReaderTheme: String, CaseIterable, Identifiable {
         }
     }
 
+    /// 中缝那道影子：双页摊开时两条内边各自往里暗一点。
+    ///
+    /// 为什么自己画：spine `.mid` 那一档落定以后系统不给任何贴边阴影（探针采过整棵
+    /// 图层树，静止时一个带变换的层都没有），摊开的书就成了一张平整的纸，看不出中缝。
+    /// 浓淡按纸走而不是全用一份黑：浅纸上薄薄一层就够，深纸要压得动才看得见那道沟。
+    /// 它只盖边距那一条白（宽度由调用方按 `sideMargin` 给），压不到字。
+    var crease: Color {
+        switch self {
+        case .paper: return Color.black.opacity(0.13)
+        case .cream: return Color.black.opacity(0.15)
+        case .sepia: return Color.black.opacity(0.18)
+        case .night: return Color.black.opacity(0.55)
+        case .system: return Color(
+            uiColor: UIColor { traits in
+                UIColor(
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    alpha: traits.userInterfaceStyle == .dark ? 0.55 : 0.13
+                )
+            }
+        )
+        }
+    }
+
     /// 这一档纸在视觉上属于哪套外观——卷页那层（UIKit）照着它把 traits 钉死。
     ///
     /// 为什么不由系统外观裸决定：`uiBackground` 是动态色，取值要看宿主视图的

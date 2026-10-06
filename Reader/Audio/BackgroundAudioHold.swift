@@ -24,6 +24,9 @@ final class BackgroundAudioHold {
 
     private var player: AVAudioPlayer?
 
+    /// 已经报过一次「顶不起来」，不再刷屏：`updateAudioHold` 每次状态变动都会重试。
+    private var didLogStartFailure = false
+
     /// 有没有在顶着。幂等：已经在跑就别重建。
     var isActive: Bool {
         player?.isPlaying ?? false
@@ -35,8 +38,17 @@ final class BackgroundAudioHold {
         if player == nil {
             player = Self.makePlayer()
         }
-        player?.currentTime = 0
-        player?.play()
+        guard let player else { return }
+        player.currentTime = 0
+
+        // `play()` 返回 false = 这一路其实没开起来（最常见是音频会话没激活）。
+        // 原来这里直接把 Bool 丢掉，于是 `[Hold] 静音顶住会话` 那句日志变成假话：
+        // 看着像有保活，进程照样被冻。它只在这一次失败说话，成功不需要日志。
+        guard !player.play() else { return }
+        if !didLogStartFailure {
+            didLogStartFailure = true
+            print("⚠️ [Hold] 静音保活启动失败（play() 返回 false）：这一路没顶住会话，熄屏后仍会被冻结")
+        }
     }
 
     /// 不顶了：把这一路彻底放下，好让别的 App 拿回音频焦点。

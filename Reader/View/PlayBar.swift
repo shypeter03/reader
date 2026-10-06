@@ -166,10 +166,9 @@ struct PageNumberBar: View {
 
 /// 阅读页唤出来的两条：上方「关闭 · 目录 · Aa」，下方「听」。
 ///
-/// 正文中心完全留给「点哪句从哪句开始朗读」，所以这两条不常驻，
-/// 由左右边缘点击或下滑唤出、几秒后自己收回去——像图书 App 那样。
+/// 正文中心留给「单击唤出这两条（双击才读那一句）」，所以这两条不常驻，唤出几秒后自己收回去。
 /// 「听」只留播放/暂停、句序、倍速和生成状态：上一句/下一句和句进度条都撤了，
-/// 点句本身就是跳句，一条压在 home 指示条上的横杠既点不准也没地方点。
+/// 双击正文本身就是跳句，一条压在 home 指示条上的横杠既点不准也没地方点。
 /// 生成状态只是条尾一个字，不再单独占一行——那样阅读页会被三条横杠夹着，
 /// 中间留给正文的高度不到半屏，翻页翻两句就到底。
 struct ReaderTopBar: View {
@@ -180,6 +179,15 @@ struct ReaderTopBar: View {
     static var totalHeight: CGFloat {
         ChromeInsets.top + contentHeight
     }
+
+    /// 顶栏中间那一行：章名 + 本章还剩几页。
+    ///
+    /// 章名给 `descriptor.backLabel`（「第2章 李火旺」），和纸上页眉同一个串——
+    /// 两处各编一份章名，读者就会问「纸上第 2 章和顶上这个是不是同一章」。
+    let chapterLabel: String
+
+    /// 本章还剩几页（不含正在看的这一面）。
+    let pagesLeft: Int
 
     let onClose: () -> Void
 
@@ -197,8 +205,6 @@ struct ReaderTopBar: View {
 
             HStack(spacing: 18) {
 
-                // 只有箭头，不带章名：章名交给正文上面那行常驻页眉，
-                // 摆在返回键上等于每翻一页都要重看一遍同样的字。
                 Button(
                     action: onClose
                 ) {
@@ -221,7 +227,26 @@ struct ReaderTopBar: View {
                 }
                 .accessibilityLabel("返回书库")
 
-                Spacer()
+                // 中间这一块：章名 + 本章还剩几页。`maxWidth: .infinity` 让它占满
+                // 箭头和右边两个按钮之间剩下的全部，字长了就截尾，不把按钮挤走。
+                VStack(spacing: 1) {
+
+//                    Text(
+//                        chapterLabel
+//                    )
+//                    .font(.subheadline.weight(.medium))
+//                    .lineLimit(1)
+//                    .truncationMode(.tail)
+//                    .foregroundStyle(Color.primary.opacity(0.78))
+
+                    Text(
+                        "本章还剩 \(max(pagesLeft, 0)) 页"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(Color.primary.opacity(0.42))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 4)
 
                 Button(
                     action: onTypography
