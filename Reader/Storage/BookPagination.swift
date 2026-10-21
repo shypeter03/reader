@@ -25,7 +25,7 @@ struct BookPageMap: Codable, Equatable {
     /// 还没量到的那一格。
     static let unmeasured = -1
 
-    /// 排版档，就是 `ReaderView.pageMetrics` 那一个串（纸宽×高|字号|行距）。
+    /// 排版档，就是 `ReaderView.pageMetrics` 那一个串（纸宽×高|字号|行距|图的口径）。
     let metrics: String
 
     /// 每章几面纸，按 `Book.chapters` 的顺序。
@@ -75,6 +75,11 @@ enum BookPagination {
     /// 每量到一段就用 `onProgress` 把当前的图交出去（底部那一行的「第 N 页」要在
     /// 前面的章量完时立刻变准，不该等整本书），取消（换了排版档、退出阅读页）时
     /// 把量到的那一截先落盘——下次接着跑，前面那些章不用重量。
+    ///
+    /// `imagesOf` 由手上真有书单的那一侧给（`ReaderView` 里就是 `book.placedImages`）。
+    /// 这一层不 import 书单、也不自己判装饰图：判据只许有一份（见 `Book.placedImages`），
+    /// 而一张图进不进这一页是要**问高度**的——这里量的是面数，漏了图就比纸上少一面，
+    /// 底部「第 N 页」和读者手上那一面对不上。默认交空表只留给探针那种没有图的路径。
     static func measure(
         bookID: UUID,
         metrics: String,
@@ -82,6 +87,7 @@ enum BookPagination {
         area: CGSize,
         scale: Double,
         lineScale: Double,
+        imagesOf: @escaping @Sendable (Chapter, ChapterDescriptor) -> [ChapterImage] = { _, _ in [] },
         onProgress: @escaping @Sendable (BookPageMap) -> Void
     ) async -> BookPageMap? {
 
@@ -130,6 +136,7 @@ enum BookPagination {
 
             let sentences = chapter.sentences
             let title = chapter.title
+            let images = imagesOf(chapter, descriptor)
 
             // 整章量高挪出主线程，和翻页预取同一条优先级：这一趟几百次，压在 UI 线程上
             // 就是「读一句卡一下」。
@@ -139,7 +146,8 @@ enum BookPagination {
                     in: area,
                     scale: scale,
                     lineScale: lineScale,
-                    chapterTitle: title
+                    chapterTitle: title,
+                    images: images
                 ).pageCount
             }.value
 
@@ -200,7 +208,12 @@ enum BookPagination {
         if let saved = await chapterStore.load(
             bookID: bookID,
             chapterID: descriptor.id
-        ), saved.textVersion == SentenceSplitter.textVersion {
+        ), saved.textVersion == SentenceSplitter.textVersion,
+           saved.isVolumeDivider != nil,
+           saved.imagesVersion == ImageExtraction.version {
+            // 后两条和 `loadParsedChapter` 同一口径：扉页判据与图的锚点都落在字段缺失的那批老数据上，
+            // 那时候还没判过、没记过，让它回 parser 重切一次。不然量页这一趟按「样板句也算正文」数、
+            // 按「这一章没有图」留白，纸上是扉页和一块图框、底下那行页码却数着两行字——两把尺又是分家。
             return saved
         }
 

@@ -704,6 +704,11 @@ private extension ReaderView {
 
             guard !Task.isCancelled else { return }
 
+            // 量全书那一趟跨 actor 跳，`book` 这个视图状态带不过去，只带得出判据要的那两个值。
+            // 筛法还是 `Book.placedImages` 那一段（它两条入口共用本体），不是这里另写一份。
+            let tally = book.imageTally
+            let chapterCount = book.chapters.count
+
             if let map = await BookPagination.measure(
                 bookID: book.id,
                 metrics: metrics,
@@ -711,6 +716,14 @@ private extension ReaderView {
                 area: area,
                 scale: fontScale,
                 lineScale: lineScale,
+                imagesOf: { chapter, descriptor in
+                    Book.placedImages(
+                        chapter.images,
+                        chapterURL: descriptor.fileURL,
+                        tally: tally,
+                        chapterCount: chapterCount
+                    )
+                },
                 onProgress: { bookPages = $0 }
             ) {
                 bookPages = map
@@ -760,6 +773,8 @@ private extension ReaderView {
                 bodySize: main.layout.bodySize,
                 lineScale: lineScale,
                 sideMargin: main.layout.sideMargin,
+                usableHeight: main.layout.usableHeight,
+                chapterURL: main.descriptor.fileURL,
                 theme: theme,
                 chapterTitle: "",
                 activePosition: nil,
@@ -779,6 +794,14 @@ private extension ReaderView {
         /// 它退回单栏 + 0，和下面 `slices` 那一句的「拿不到就交空页」是同一个兜底口径。
         let columns = sheet.layout.columns(onPage: local)
 
+        /// 扉页那一面只印卷名。章名照旧走页眉，但取的是 `chapter.title`——
+        /// 卷页的真标题写在 `<h1 title="…">` 属性里，书单上那一格可能是老数据补出来的
+        /// 「第N章」，`loadChapter` 读得到文件就把卷名拿了回来（`EPUBParser.repairedTitle`），
+        /// 页眉还照书单走就会出现「页眉第五章、纸上第一卷」这两本账。
+        let divider = sheet.chapter.isVolumeDivider == true
+            ? sheet.chapter.title
+            : nil
+
         return ReaderPageView(
             sentences: sheet.chapter.sentences,
             slices: sheet.layout.pages.indices.contains(local)
@@ -789,6 +812,8 @@ private extension ReaderView {
             columnCuts: columns.cuts,
             columnStretch: columns.stretch,
             sideMargin: sheet.layout.sideMargin,
+            usableHeight: sheet.layout.usableHeight,
+            chapterURL: sheet.descriptor.fileURL,
             theme: theme,
             chapterTitle: sheet.chapter.title,
             activePosition: isMain ? activeHighlight : nil,
@@ -801,10 +826,15 @@ private extension ReaderView {
                 }
                 handleTap(position, path: .link)
             },
-            runningHead: sheet.descriptor.backLabel,
+            runningHead: divider == nil
+                ? sheet.descriptor.backLabel
+                // 扉页不印页眉：书的半卷页上那一面只有卷名，页眉再写一遍就成了
+                // 「同一页两个第一卷」。空串是这一层已有的「什么都不印」（补位白纸同款）。
+                : "",
             // 章名只在每一摊右边那面印（书里的规矩：章名在右页页眉，左页那一面是背面，
             // 印了就是两面都有章名，看着像两本书并排放）。顶栏唤出来时两边一起淡掉。
             headOpacity: chromeShown || spineEdge == .trailing ? 0 : 1,
+            dividerTitle: divider,
             spineEdge: spineEdge
         )
     }
@@ -850,13 +880,18 @@ private extension ReaderView {
         let scale = fontScale
         let spacing = lineScale
 
+        // 图上纸要的那份筛法在主线程问完再带进去：`book` 是视图的状态，那个 detached
+        // 闭包够不着，而这一章一次预取只问一遍。
+        let images = placedImages(loaded, target.id)
+
         let laid = await Task.detached(priority: .utility) {
             PageLayout.paginate(
                 sentences,
                 in: area,
                 scale: scale,
                 lineScale: spacing,
-                chapterTitle: title
+                chapterTitle: title,
+                images: images
             )
         }.value
 
@@ -1402,6 +1437,10 @@ private extension ReaderView {
 
     /// 分页输入。角色名**不在**里面：纸上不显示说话人，名字只给语音用，
     /// 所以 LLM 后补的名字不会改动一行高度，也就不该触发重排。
+    ///
+    /// 图在里面（`imgN`），而且数的必须是**上纸的那一份**（`placedImages`）：这一章重新解出
+    /// 图来（老数据回 parser 补）时句数一根手指没碰，只有图多了——不记进来的话
+    /// `rebuildLayout` 会拿「key 没变」早退，纸上永远少那一块，读者翻到那儿看见的是白。
     func layoutKey(
         _ chapter: Chapter,
         _ size: CGSize
@@ -1409,16 +1448,50 @@ private extension ReaderView {
 
         """
         \(chapter.id.uuidString)|\(chapter.sentences.count)\
+        |img\(placedImages(chapter, chapter.id).count)\
         |\(pageMetrics(size))
         """
     }
 
-    /// 一次分页的输入里和「这一章有什么字」无关的那半：版心 + 字号 + 行距。
+    /// 一次分页的输入里和「这一章有什么字」无关的那半：版心 + 字号 + 行距 + 图的口径。
     /// 抽出来只为了 `layoutKey` 是它唯一的 superset，两处共用同一份口径。
+    ///
+    /// 图那一段为什么算进「排版档」而不是章那一格：一张图占一块高，哪些图上纸是由
+    /// `ImageExtraction.version`（锚点怎么量）和这本书的重复率表（哪些算装饰）共同决定的。
+    /// 这两样任一变了，**全书每一章的面数都可能变**，那份落盘的 `pages.json` 当场不作数——
+    /// 底部「第 N 页」拿旧表算，读者手上的纸却是新的，跨章那一下页码跳一格。
+    /// 表的指纹只取「格子数 × 出现次数之和」：Swift 的 `hashValue` 每次启动都换种子，
+    /// 记进落盘的 key 就成了「重启一次重量一遍全书」。
     func pageMetrics(
         _ size: CGSize
     ) -> String {
-        "\(Int(size.width))x\(Int(size.height))|\(fontScale)|\(lineScale)"
+        """
+        \(Int(size.width))x\(Int(size.height))|\(fontScale)|\(lineScale)\
+        |v\(ImageExtraction.version)/\(tallyFingerprint)
+        """
+    }
+
+    private var tallyFingerprint: String {
+        guard let tally = book.imageTally else { return "none" }
+        return "\(tally.count)x\(tally.values.reduce(0, +))"
+    }
+
+    /// 这一章要上纸的图，按文档顺序。判据只有一份（`Book.placedImages`），这里只是把
+    /// 书单手上那张重复率表递过去——分页、量全书、纸上画图三处都问这一个函数，
+    /// 两边各筛一次迟早分家（纸上的图比量到的多，那一面就超页）。
+    func placedImages(
+        _ chapter: Chapter,
+        _ chapterID: UUID
+    ) -> [ChapterImage] {
+
+        guard let at = book.chapters.firstIndex(where: { $0.id == chapterID }) else {
+            return chapter.images
+        }
+
+        return book.placedImages(
+            chapter.images,
+            chapterURL: book.chapters[at].fileURL
+        )
     }
 
     /// 纸面上这一面的全部输入——也就是 `ReaderPageView` 那几个参数。
@@ -1462,7 +1535,8 @@ private extension ReaderView {
             in: size,
             scale: fontScale,
             lineScale: lineScale,
-            chapterTitle: chapter.title
+            chapterTitle: chapter.title,
+            images: placedImages(chapter, chapter.id)
         )
 
         // 同一把尺的自检：底部「第 N 页」按 `bookPages` 里这一章的面数排，纸上按 `next` 排。

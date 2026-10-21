@@ -226,6 +226,11 @@ actor TTSGenerator {
             bookID: bookID
         )
 
+        // 「哪档语气」和「哪把嗓」是两件事，都得在这儿定：下面送进合成的是这一组，
+        // 记进 `recordedStyle` 的也是这一组，两边同源才对得上账。
+        let enhances = VoiceManager.enhancesEmotion
+        let style = VoiceManager.style(for: sentence, enhances: enhances)
+
         for namespace in await tts.cacheNamespaces() {
 
             guard let existing = await audioStore.load(
@@ -238,7 +243,11 @@ actor TTSGenerator {
             // 命中也要认人：缓存里那个人必须和现在该用的那把声音对上。
             // 这一步只在这里做得了——调度器看见 audioURL 非空根本不会排这条句子，
             // 而播放器放的是 chapter.json 里那个路径，谁也不会再去问声音该是谁。
-            if sentence.recordedVoiceID ?? VoiceResolution.legacy(for: sentence) == voiceID {
+            // 语气同理：拨了「增强情绪表现」那一档，句子里存的参数一个字都没动，
+            // 光比声音会把带情绪的那一版当成「参数一致」原样端上来（口径与开章那次
+            // 对账共用一份，见 `VoiceManager.styleMatches`）。
+            if sentence.recordedVoiceID ?? VoiceResolution.legacy(for: sentence) == voiceID,
+               VoiceManager.styleMatches(sentence, enhances: enhances) {
 
                 var reused = sentence
                 reused.audioURL = existing
@@ -251,7 +260,8 @@ actor TTSGenerator {
                 return reused
             }
 
-            print("[Voice] 句\(sentence.index) 缓存里是 \(sentence.recordedVoiceID ?? "旧口径")，现在该用 \(voiceID) → 删掉重录")
+            print("[Voice] 句\(sentence.index) 缓存对不上现在该用的：声音 \(sentence.recordedVoiceID ?? "旧口径")→\(voiceID)，"
+                + "语气 \(sentence.recordedStyle ?? "旧口径")（增强=\(enhances ? "开" : "关")）→ 删掉重录")
             await audioStore.delete(
                 bookID: bookID,
                 chapterID: chapter.id,
@@ -266,11 +276,11 @@ actor TTSGenerator {
             try await tts.synthesize(
                 text: sentence.text,
                 voiceID: voiceID,
-                emotion: sentence.emotion,
-                intensity: sentence.emotionIntensity,
-                speed: sentence.speed,
-                pitch: sentence.pitch,
-                voiceStrength: sentence.voiceStrength
+                emotion: style.emotion,
+                intensity: style.intensity,
+                speed: style.speed,
+                pitch: style.pitch,
+                voiceStrength: style.voiceStrength
             )
 
         let genMs = (CFAbsoluteTimeGetCurrent() - synthStart) * 1000
@@ -298,6 +308,7 @@ actor TTSGenerator {
         updated.audioURL = url
         updated.duration = duration
         updated.recordedVoiceID = voiceID
+        updated.recordedStyle = VoiceManager.styleSignature(style)
 
         return updated
     }

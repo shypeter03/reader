@@ -28,6 +28,11 @@ public class TalkerRotaryEmbedding: Module {
 
     private var _invFreq: MLXArray
 
+    /// MRoPE 交织用的两张掩码：只由 `mropeSection` 和 head_dim/2 决定，一帧一帧重建是白做功
+    /// （每帧两张 Bool 数组 + 两次上传），所以建好放着。
+    private let _hMask: MLXArray
+    private let _wMask: MLXArray
+
     public init(
         dim: Int,
         maxPositionEmbeddings: Int = 32768,
@@ -42,41 +47,34 @@ public class TalkerRotaryEmbedding: Module {
         // inv_freq = 1.0 / (base ** (arange(0, dim, 2) / dim))
         let indices = MLXArray(Array(stride(from: 0, to: dim, by: 2)).map { Float($0) })
         self._invFreq = 1.0 / pow(MLXArray(base), indices / Float(dim))
+
+        // 交织图案：每 3 个槽里第 2 个取 H、第 3 个取 W，超出各自段落长度的那些留 T。
+        let headDimHalf = dim / 2
+        var hMaskVals = [Bool]()
+        var wMaskVals = [Bool]()
+        let hLength = mropeSection[1] * 3  // 60
+        let wLength = mropeSection[2] * 3  // 60
+        for i in 0..<headDimHalf {
+            let mod3 = i % 3
+            hMaskVals.append(mod3 == 1 && i < hLength)
+            wMaskVals.append(mod3 == 2 && i < wLength)
+        }
+        self._hMask = MLXArray(hMaskVals)
+        self._wMask = MLXArray(wMaskVals)
     }
 
     /// Apply interleaved MRoPE combination
     /// Rearranges from [TTT...HHH...WWW] to [THTHWHTHW...TT]
     private func applyInterleavedMrope(_ freqs: MLXArray) -> MLXArray {
         // freqs: [3, batch, seq_len, head_dim/2]
-        let headDimHalf = freqs.dim(-1)
-
+        // Interleave: start with T, replace with H where hMask, replace with W where wMask
         let freqsT = freqs[0]  // Temporal: [batch, seq_len, head_dim/2]
         let freqsH = freqs[1]  // Height
         let freqsW = freqs[2]  // Width
 
-        // Create interleaved pattern using loops
-        // For mrope_section = [24, 20, 20]:
-        // - First 60 positions (20*3): interleaved T,H,W pattern
-        // - Remaining 4 positions: T only (24 - 20 = 4)
-
-        let hLength = mropeSection[1] * 3  // 60
-        let wLength = mropeSection[2] * 3  // 60
-
-        // Create masks for H and W positions
-        var hMaskVals = [Bool]()
-        var wMaskVals = [Bool]()
-        for i in 0..<headDimHalf {
-            let mod3 = i % 3
-            hMaskVals.append(mod3 == 1 && i < hLength)
-            wMaskVals.append(mod3 == 2 && i < wLength)
-        }
-        let hMask = MLXArray(hMaskVals)
-        let wMask = MLXArray(wMaskVals)
-
-        // Interleave: start with T, replace with H where hMask, replace with W where wMask
         var combined = freqsT
-        combined = MLX.where(hMask, freqsH, combined)
-        combined = MLX.where(wMask, freqsW, combined)
+        combined = MLX.where(_hMask, freqsH, combined)
+        combined = MLX.where(_wMask, freqsW, combined)
 
         return combined
     }

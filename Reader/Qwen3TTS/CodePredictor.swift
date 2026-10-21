@@ -268,7 +268,14 @@ public class CodePredictorModel: Module {
     }
 
     public func makeCache() -> [KVCache] {
-        return (0..<config.numHiddenLayers).map { _ in KVCacheSimple() }
+        // 一帧一套：16 号 codebook 的历史只在帧内活。`KVCacheSimple` 默认按 256 格铺开，
+        // 而这里一帧最多用到 16 格（prefill 2 + 后面 14 步各 1），于是每帧白铺一次零缓冲。
+        // 格子数收小动的只是分配粒度，缓存内容和 offset 都不变。
+        return (0..<config.numHiddenLayers).map { _ in
+            let cache = KVCacheSimple()
+            cache.step = 32
+            return cache
+        }
     }
 }
 

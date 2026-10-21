@@ -64,6 +64,14 @@ struct Sentence: Identifiable, Codable, Sendable {
     /// 而调度器看 audioURL 非空连重录都不会排。开章时按它判过期（见 `purgeReclaimedAudio`）。
     var recordedVoiceID: String?
 
+    /// 这段音频是按哪一组朗读参数合成的（``VoiceManager/styleSignature(_:)``）。
+    ///
+    /// 和 ``recordedVoiceID`` 同类的对账凭据，管的不是「哪把嗓」而是「哪档语气」：
+    /// 「增强情绪表现」一关，进合成的 instruct 换成统一中性档，而句子里存的 emotion
+    /// 故意不改（拨回来还要照着演），于是旧音频成了「参数没变、听感变了」的那种残留——
+    /// 没有这一列，调度器看见 audioURL 非空连重录都不会排，表现就是「关了开关语气照旧跳」。
+    var recordedStyle: String?
+
     var analysisStatus: SentenceAnalysisStatus
     var audioStatus: SentenceAudioStatus
 
@@ -129,7 +137,7 @@ struct Sentence: Identifiable, Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, index, text, type, speaker, characterID, characterName, emotion
         case emotionIntensity, speed, pitch, voiceStrength, startsParagraph
-        case audioURL, duration, recordedVoiceID, analysisStatus, audioStatus
+        case audioURL, duration, recordedVoiceID, recordedStyle, analysisStatus, audioStatus
     }
 
     init(from decoder: Decoder) throws {
@@ -157,6 +165,9 @@ struct Sentence: Identifiable, Codable, Sendable {
         // 旧版 chapter.json 没有这一列：留 nil，由开章那次对账按「当时全用旁白声 +
         // 一把无名男声」的旧口径折算，见 ReaderPipeline 里的 `legacyVoice`。
         recordedVoiceID = try c.decodeIfPresent(String.self, forKey: .recordedVoiceID)
+        // 旧版 chapter.json 没有这一列：留 nil，由对账那边按「当时还没有开关、照着
+        // 存储参数演」折算（见 `TTSGenerator.produce`），一律判过期会把整本书重录一遍。
+        recordedStyle = try c.decodeIfPresent(String.self, forKey: .recordedStyle)
         analysisStatus = try c.decodeIfPresent(SentenceAnalysisStatus.self, forKey: .analysisStatus) ?? .pending
         audioStatus = try c.decodeIfPresent(SentenceAudioStatus.self, forKey: .audioStatus) ?? (audioURL == nil ? .pending : .completed)
     }

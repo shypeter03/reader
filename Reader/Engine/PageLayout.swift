@@ -15,6 +15,11 @@ import Foundation
 ///
 /// 存的是**切好的文本**，不是「句下标 + 字符区间」：渲染端和测量端都直接拿这一份字去排，
 /// 谁也没机会再切出第二个版本。切分口径只存在于 `paginate` 里一次。
+///
+/// `image` 非空的那一片不是字，是**一张图**：它自成一块（见 `ReaderBlock.groups`），
+/// 高按 `ReaderTypography.imageFrame` 算，不占句子、不被朗读。`position` 记的是它的锚点，
+/// 也就是紧跟在它下面那一句——章末图的锚点是 `sentences.count`，那是一个合法的下标边界，
+/// 不是可索引的位置，所以凡拿 `position` 索引 `sentences` 的地方都得先问 `image`。
 struct PageSlice: Equatable, Hashable {
 
     /// 这一片属于哪一句（`chapter.sentences` 的数组下标，和 PlayerManager 同一口径，
@@ -27,14 +32,19 @@ struct PageSlice: Equatable, Hashable {
     /// true = 上一页断下来的后半截：不吃段前白、不再缩进、不当成新段落开头。
     let continues: Bool
 
+    /// 一张图。nil = 这一片是字。
+    let image: ChapterImage?
+
     init(
         position: Int,
         text: String,
-        continues: Bool = false
+        continues: Bool = false,
+        image: ChapterImage? = nil
     ) {
         self.position = position
         self.text = text
         self.continues = continues
+        self.image = image
     }
 }
 
@@ -83,6 +93,14 @@ struct PageLayout: Equatable {
     /// 两条边距是同一个数，所以正文永远落在纸的正中。
     let sideMargin: CGFloat
 
+    /// 一张纸给正文用的高，就是 `usableHeight(area:body:)` 算出来的那一个数。
+    ///
+    /// 为什么也要随页交出去：一张图画多大问 `ReaderTypography.imageFrame`，而它的高上限是
+    /// `usableHeight × 0.7`。渲染端留空时按自己的 `GeometryReader` 现量一份，那是第二把尺——
+    /// 纸面比分页那块地方矮一点（转屏中途、页码条改高）时，纸上就画得比页里留的高，
+    /// 多出来那几 pt 正是页尾红线反掉的那一笔。交过来，两边问的是同一个数。
+    let usableHeight: CGFloat
+
     let bodySize: CGFloat
 
     var pageCount: Int { pages.count }
@@ -95,6 +113,8 @@ struct PageLayout: Equatable {
             letter: ReaderBlock.letterWidth(body: 19),
             columns: 1
         ),
+        // 占位这一版没有纸：零句零图，图框的高上限给 0——宁可画不出框，也不凭空留一块白。
+        usableHeight: 0,
         bodySize: 19
     )
 
@@ -149,7 +169,8 @@ struct PageLayout: Equatable {
         in area: CGSize,
         scale: Double,
         lineScale: Double,
-        chapterTitle: String
+        chapterTitle: String,
+        images: [ChapterImage] = []
     ) -> PageLayout {
 
         guard area.width > 40, area.height > 40 else {
@@ -219,18 +240,53 @@ struct PageLayout: Equatable {
             )
         }
 
-        // 整章先摊成「一片 = 一整句」，按同段并成块，再贪心装页。
+        /// 一张图在本栏里给多高（含 `renderGuard` 那笔落纸预留）。
+        ///
+        /// 贪心装页和收尾摊行距（`stretch(for:)`）两处都要问这一个数，两边各写一遍迟早算歪：
+        /// 页里给图留 200pt、纸上画 240pt，多出来那 40pt 就是从今天起少给读者的一行。
+        func imageHeight(_ image: ChapterImage) -> CGFloat {
+            ReaderTypography.imageFrame(
+                image,
+                columnWidth: columnWidth,
+                usableHeight: usableHeight
+            ).height + ReaderTypography.renderGuard
+        }
+
+        // 整章先摊成「一片 = 一整句」，图按锚点插在句子中间，再按同段并成块，最后贪心装页。
         // 页边界怎么切（含句内切）在下面那个循环里。
-        let blocks = ReaderBlock.groups(
-            in: sentences.indices.map {
+        //
+        // 图的锚点是「排在 `sentences[anchor]` 之前」（`ChapterImage.anchor` 的口径），
+        // 所以它跟着**那一句**落在同一片序里，不占句子编号。`min(anchor, count)` 是给
+        // 句子重切之后残留的老锚点兜底的下界：句子少了，锚点才会越界，那时候图留在章末
+        // 比整张丢掉好——它仍然在文档顺序里，只是位置退到最后一句之后。
+        var slices: [PageSlice] = []
+        var nextImage = 0
+
+        for index in sentences.indices {
+            while nextImage < images.count, min(images[nextImage].anchor, sentences.count) <= index {
+                slices.append(PageSlice(position: index, text: "", image: images[nextImage]))
+                nextImage += 1
+            }
+            slices.append(
                 PageSlice(
-                    position: $0,
+                    position: index,
                     text: ReaderTypography.displayText(
-                        sentences[$0],
+                        sentences[index],
                         chapterTitle: chapterTitle
                     )
                 )
-            },
+            )
+        }
+
+        while nextImage < images.count {
+            slices.append(
+                PageSlice(position: sentences.count, text: "", image: images[nextImage])
+            )
+            nextImage += 1
+        }
+
+        let blocks = ReaderBlock.groups(
+            in: slices,
             sentences: sentences,
             chapterTitle: chapterTitle
         )
@@ -263,7 +319,8 @@ struct PageLayout: Equatable {
         /// 会在每个折行处多算一行，页尾就溢出去。
         var blockRuns: [ReaderBlock.Run] = []
 
-        var blockGap: CGFloat = 0
+        /// 当前块那条段前白（高度 + 能跟着行距挪的缝数），`ReaderBlock.gap` 原样交出。
+        var blockGap: (height: CGFloat, lineSpacingSeams: Int) = (0, 0)
 
         var blockIndex = 0
 
@@ -308,7 +365,7 @@ struct PageLayout: Equatable {
             committed = 0
             committedSeams = 0
             blockRuns = []
-            blockGap = 0
+            blockGap = (0, 0)
 
             if spreadCuts.count == columns {
                 flushPage()
@@ -322,8 +379,10 @@ struct PageLayout: Equatable {
         /// 高度和缝数就是纸上落的那一份。刻意不用装页过程里的 `committed + 块高`：
         /// 句内切那一下，切出来的前半片只进了 `current` 没进 `blockRuns`，那套临时状态在这里是缺的。
         ///
-        /// 缝数把段前白那条也算进去（`gap > 0` 时）：渲染端挪 `lineSpacing` 时连 `gap` 里含的那个
-        /// `lineSpacing` 一起挪了，所以每条缝都恰好挪 `e`。这样缝数 ≈ 全页行数 − 1，和分了几段无关
+        /// 缝数取 `gap` 自己交回的那一份（`lineSpacingSeams`），不按「段前白 > 0」数：渲染端挪
+        /// `lineSpacing` 时连 `gap` 里含的那个 `lineSpacing` 一起挪了，所以每条这样的缝恰好挪 `e`，
+        /// 而纯段距那一种（紧跟图的图注）一动不动，数进来就是压不平的余量。
+        /// 这样缝数 ≈ 全页行数 − 1，和分了几段无关
         /// ——对白多的页（段多、每段行少）也不会因为「块内缝少」而被迫把 `e` 拉大。
         ///
         /// 这里的 `e` 和装页时那份 `fillBudget` 是同一枚硬币的两面：预算按「每缝最多挪
@@ -341,11 +400,29 @@ struct PageLayout: Equatable {
             var height: CGFloat = 0
             var seams = 0
 
-            for (index, group) in ReaderBlock.groups(
+            let groups = ReaderBlock.groups(
                 in: slices,
                 sentences: sentences,
                 chapterTitle: chapterTitle
-            ).enumerated() {
+            )
+
+            for (index, group) in groups.enumerated() {
+
+                let gap = ReaderBlock.gap(
+                    first: group[0],
+                    firstOnPage: index == 0,
+                    sentences: sentences,
+                    size: body,
+                    lineSpacing: lineSpacing,
+                    afterImage: index > 0 && groups[index - 1][0].image != nil
+                )
+
+                // 图那块没有行，只有它自己那一块高；段前白那条缝按 `gap` 交回的数记。
+                if let image = group[0].image {
+                    height += gap.height + imageHeight(image)
+                    seams += gap.lineSpacingSeams
+                    continue
+                }
 
                 let runs = ReaderBlock.runs(
                     for: group,
@@ -353,18 +430,10 @@ struct PageLayout: Equatable {
                     chapterTitle: chapterTitle
                 )
 
-                let gap = ReaderBlock.gap(
-                    first: group[0],
-                    firstOnPage: index == 0,
-                    sentences: sentences,
-                    size: body,
-                    lineSpacing: lineSpacing
-                )
-
                 let m = metricsOf(runs)
 
-                height += gap + m.height
-                seams += max(m.lines - 1, 0) + (gap > 0 ? 1 : 0)
+                height += gap.height + m.height
+                seams += max(m.lines - 1, 0) + gap.lineSpacingSeams
             }
 
             let slack = usableHeight - height.rounded(.up)
@@ -466,6 +535,36 @@ struct PageLayout: Equatable {
         while blockIndex < blocks.count {
 
             let block = blocks[blockIndex]
+
+            // 图是**原子块**：整张要么进本栏，要么整张挪到下一栏——切一半的图不是图。
+            // 它因此不进 `blockRuns`（那套累计是给「一段连着排、要连着量」的字用的）：
+            // 一块一张、一次交账。空栏一定装得下它，`imageFrame` 那条 0.7 的上限担保了这一点，
+            // 所以这里不需要「切不动也不许往空栏重复塞」那道兜底。
+            if let image = block[0].image {
+
+                let gap = ReaderBlock.gap(
+                    first: block[0],
+                    firstOnPage: current.isEmpty,
+                    sentences: sentences,
+                    size: body,
+                    lineSpacing: lineSpacing
+                )
+
+                let height = imageHeight(image)
+
+                if gap.height + height
+                    <= fillBudget(seams: committedSeams + gap.lineSpacingSeams) - committed {
+                    current.append(block[0])
+                    committed += gap.height + height
+                    committedSeams += gap.lineSpacingSeams
+                    blockIndex += 1
+                } else {
+                    closeColumn()
+                }
+
+                continue
+            }
+
             let entry = block[entryIndex]
 
             let rest = String(entry.text.dropFirst(entryOffset))
@@ -489,17 +588,21 @@ struct PageLayout: Equatable {
                     firstOnPage: current.isEmpty,
                     sentences: sentences,
                     size: body,
-                    lineSpacing: lineSpacing
+                    lineSpacing: lineSpacing,
+                    afterImage: blockIndex > 0 && blocks[blockIndex - 1][0].image != nil
                 )
             }
 
-            let spare = usableHeight - committed - blockGap
+            let spare = usableHeight - committed - blockGap.height
 
             let placed = metricsOf(blockRuns + runs)
 
-            let blockSeams = (blockGap > 0 ? 1 : 0) + max(placed.lines - 1, 0)
+            let blockSeams =
+                blockGap.lineSpacingSeams + max(placed.lines - 1, 0)
 
-            if placed.height <= fillBudget(seams: committedSeams + blockSeams) - committed - blockGap {
+            if placed.height
+                <= fillBudget(seams: committedSeams + blockSeams)
+                - committed - blockGap.height {
 
                 current.append(slice)
                 blockRuns += runs
@@ -509,10 +612,10 @@ struct PageLayout: Equatable {
 
                 // 这一块排完了：交账，下一块另起一份累计。
                 if entryIndex == block.count {
-                    committed += blockGap + placed.height
+                    committed += blockGap.height + placed.height
                     committedSeams += blockSeams
                     blockRuns = []
-                    blockGap = 0
+                    blockGap = (0, 0)
                     blockIndex += 1
                     entryIndex = 0
                 }
@@ -525,7 +628,7 @@ struct PageLayout: Equatable {
                 continues: continues,
                 position: entry.position,
                 spare: spare,
-                seamsBefore: committedSeams + (blockGap > 0 ? 1 : 0)
+                seamsBefore: committedSeams + blockGap.lineSpacingSeams
             ) {
                 current.append(
                     PageSlice(
@@ -614,6 +717,7 @@ struct PageLayout: Equatable {
             columnCuts: columnCuts,
             columnStretch: columnStretch,
             sideMargin: sideMargin,
+            usableHeight: usableHeight,
             bodySize: body
         )
     }

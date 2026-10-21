@@ -35,26 +35,13 @@ actor MLXQwenService: AIService {
 
         print("开始加载 Qwen3-0.6B (本地模型)...")
 
-        // Qwen3-0.6B-MLX-4bit 以 folder reference（蓝色文件夹）打包为 bundle 内的
-        // 独立子目录。必须从该子目录加载：MLXLMCommon 的 loadWeights 会用
-        // FileManager.enumerator 递归合并目录下所有 *.safetensors，若从 bundle 根
-        // 加载会把 SparkTTSCache 里的 Spark 骨干权重（hidden 896）一并读入并覆盖
-        // Qwen3 的同名权重（hidden 1024），导致 mismatchedSize。
-        let bundleResourceName = "Qwen3-0.6B-MLX-4bit"
-        guard let modelDirectory = Bundle.main.url(
-            forResource: bundleResourceName,
-            withExtension: nil
-        ) else {
-            print("未找到内置模型文件夹 \(bundleResourceName)（需以 folder reference 方式加入工程）")
+        // 权重不再打进 App，是用户从「设置 → 模型下载」拉回来的那一份（见 `ModelStore`）。
+        // 必须按这一套自己的目录加载：MLXLMCommon 的 loadWeights 会用 FileManager.enumerator
+        // 递归合并目录下所有 *.safetensors，喂上层 `models/` 会把另一套（TTS 的 talker，
+        // hidden 维不同）一并读进来并覆盖 Qwen3 的同名权重，导致 mismatchedSize。
+        guard let modelDirectory = ModelStore.directoryIfReady(.qwen3LLM) else {
+            print("Qwen3-0.6B 权重未就位 → 设置里「模型下载」那一条拉完这一档才能标注句子")
             throw AIError.modelNotLoaded
-        }
-
-        let fm = FileManager.default
-        for file in ["config.json", "model.safetensors"] {
-            guard fm.fileExists(atPath: modelDirectory.appendingPathComponent(file).path) else {
-                print("缺少内置 Qwen3 文件: \(file)")
-                throw AIError.modelNotLoaded
-            }
         }
 
         model = try await loadModel(

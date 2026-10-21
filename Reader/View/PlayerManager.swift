@@ -108,6 +108,17 @@ final class PlayerManager: ObservableObject {
     /// 卡片上那根进度条上次推过去是什么时候（`CFAbsoluteTimeGetCurrent`）。
     private var cardTickAt: Double = 0
 
+    /// 上一句放完的时刻 + 它是第几句，用来量「换 `AVPlayerItem` 到下一句真出声」那段空档。
+    ///
+    /// 为什么要这个数：一句被 48 字上限裁成两半时，接缝上叠了两样东西——前一段自带的
+    /// 尾静音，和这一段换 item 的空档。前者合成那边已经能打印（`[TTS⏱] … 尾静音 …s→留 …s`），
+    /// 后者只有真机放着音频才量得到。听感上「说到某个字停一下」到底是哪一样撑起来的，
+    /// 就靠这两个数分工。
+    ///
+    /// 记的是「从哪一句接过来」：只有播放头正好走到它的下一句才算这一笔，别的入口
+    /// （点句、双击读句、跨章）一律不认，免得把用户按下去的那一下也量成换 item 的开销。
+    private var seamClock: (from: Int, at: Double)?
+
     private init() {
         configureAudioSession()
         installNowPlayingCommands()
@@ -933,6 +944,10 @@ private extension PlayerManager {
 
             awaitingAudio = true
 
+            // 等音频的这一段是几十秒的合成，不是换 item 的开销：这笔账不清掉，
+            // 续播时那一下会把整段等待都报成 `[Gap]`。
+            seamClock = nil
+
             // 指针已经挪到这一句，可它的音频还没来：手上那一句旧音频必须当场收声，而且
             // 要从播放器上**摘掉**。只把 `isPlaying` 写成 false 是假的——AVPlayer 还在放
             // 上一句，而它放完会走 `handleSentenceFinished` 把播放头推到 i+1，用户点的那
@@ -1024,6 +1039,14 @@ private extension PlayerManager {
                 }
 
                 Task { @MainActor in
+
+                    // 空档在这儿收尾：新 item 的时间开始走 = 真的出声了。
+                    if let clock = self.seamClock, self.currentSentenceIndex == clock.from + 1,
+                       time.seconds > 0 {
+                        self.seamClock = nil
+                        print("[Gap] 句\(clock.from)→\(self.currentSentenceIndex) 换 item 的空档 "
+                            + "\(String(format: "%.0f", (CFAbsoluteTimeGetCurrent() - clock.at) * 1000))ms")
+                    }
 
                     self.currentTime =
                         time.seconds
@@ -1180,6 +1203,15 @@ private extension PlayerManager {
                 }
 
                 Task { @MainActor in
+                    // 只在**人造接缝**上记这一笔：被 48 字上限裁开的那半句后面紧跟的是另一次
+                    // 合成，那一下停顿是「尾静音 + 换 item」两样叠出来的，量不到换 item 那一半
+                    // 就没法判断该不该动播放器。自然句末和跨章（等的是读盘排产，形状不同）都不量。
+                    if self.currentSentenceIndex < self.sentences.count - 1,
+                       SentenceSplitter.endsMidClause(
+                           self.sentences[self.currentSentenceIndex].text
+                       ) {
+                        self.seamClock = (self.currentSentenceIndex, CFAbsoluteTimeGetCurrent())
+                    }
                     self.handleSentenceFinished()
                 }
             }

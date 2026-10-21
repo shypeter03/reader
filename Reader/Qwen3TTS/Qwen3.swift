@@ -125,6 +125,17 @@ public class Qwen3TTSModel: Module {
         return categorical(scaledLogits)
     }
 
+    /// 特殊码本位（词表末尾那 1024 个，EOS 除外）的下标，一次算好、逐帧复用。
+    ///
+    /// 原来这一步住在 `sampleToken` 里：每一帧都从 `[Int]` 现做一遍 `map { Int32($0) }`
+    /// 再包成 `MLXArray`，而 1023 个元素每一帧都一字不差——白扔一次宿主端分配和一次上传。
+    private func makeSuppressIndices(eosTokenId: Int, vocabSize: Int) -> MLXArray {
+        let indices = ((vocabSize - 1024)..<vocabSize)
+            .filter { $0 != eosTokenId }
+            .map { Int32($0) }
+        return MLXArray(indices).expandedDimensions(axis: 0)
+    }
+
     /// Sample next token from logits using categorical sampling
     /// Matches Python mlx_lm.sample_utils implementation exactly
     private func sampleToken(
@@ -134,7 +145,7 @@ public class Qwen3TTSModel: Module {
         topP: Float = 1.0,
         repetitionPenalty: Float = 1.05,
         generatedTokens: [Int] = [],
-        suppressTokens: [Int]? = nil,
+        suppressIndices: MLXArray? = nil,
         eosTokenId: Int? = nil
     ) -> MLXArray {
         // Get last position logits, keeping batch dimension [1, vocab_size]
@@ -150,11 +161,10 @@ public class Qwen3TTSModel: Module {
         let vocabSize = logitsProcessed.dim(-1)
 
         // 1. Suppress invalid tokens (set to -inf)
-        if let suppress = suppressTokens, !suppress.isEmpty {
-            let suppressIdx = MLXArray(suppress.map { Int32($0) }).expandedDimensions(axis: 0)
+        if let suppressIndices {
             logitsProcessed = putAlong(
                 logitsProcessed,
-                suppressIdx,
+                suppressIndices,
                 values: MLXArray(-Float.infinity),
                 axis: -1
             )
@@ -620,12 +630,7 @@ public class Qwen3TTSModel: Module {
 
         // Build suppress tokens list (special tokens except EOS)
         let vocabSize = talkerConfig.vocabSize
-        var suppressTokens = [Int]()
-        for i in (vocabSize - 1024)..<vocabSize {
-            if i != eosTokenId {
-                suppressTokens.append(i)
-            }
-        }
+        let suppressIndices = makeSuppressIndices(eosTokenId: eosTokenId, vocabSize: vocabSize)
 
         // Initialize cache
         let cache = talker.makeCache()
@@ -656,7 +661,7 @@ public class Qwen3TTSModel: Module {
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
                 generatedTokens: generatedTokens,
-                suppressTokens: suppressTokens,
+                suppressIndices: suppressIndices,
                 eosTokenId: eosTokenId
             )
 
@@ -671,7 +676,12 @@ public class Qwen3TTSModel: Module {
             onToken?(tokenValue)
 
             // Generate remaining 15 codebooks using Code Predictor
+            // `codeEmbeds[j]` = 第 j 号 codebook 的字面嵌入（下标和 `codeTokens` 对齐）。
+            // 0 号那张表就是 talker 的输入表，它既喂这里的 prefill，也进下面 `codecEmbed`
+            // 的总和——一帧取一次。
+            let code0Embed = talker.getInputEmbeddings()(nextToken)
             var codeTokens: [MLXArray] = [nextToken]
+            var codeEmbeds: [MLXArray] = [code0Embed]
 
             if let codePredictor = talker.codePredictor {
                 let seqLen = hiddenStates.dim(1)
@@ -683,22 +693,23 @@ public class Qwen3TTSModel: Module {
                     let codeInput: MLXArray
                     if codeIdx == 0 {
                         // Prefill: [hidden_state, code_0_embed]
-                        let code0Embed = talker.getInputEmbeddings()(nextToken)
                         codeInput = MLX.concatenated([codeHidden, code0Embed], axis: 1)
                     } else {
                         // Generation: only previous code embedding
-                        let prevCode = codeTokens[codeIdx]
-                        let codeEmbed = codePredictor.codecEmbedding[codeIdx - 1](prevCode)
+                        // 这一次 gather 的产物同时也是下面总和里的那一项，存下来复用。
+                        let codeEmbed = codePredictor.codecEmbedding[codeIdx - 1](codeTokens[codeIdx])
+                        codeEmbeds.append(codeEmbed)
                         codeInput = codeEmbed
                     }
 
                     // Forward through Code Predictor
+                    // 不在这里 `eval(codeLogits)`：下面采样那条链本来就要等它落定，
+                    // 先 eval 一次只是多一回提交并等待，一帧白付 15 次。
                     let (codeLogits, _, _) = codePredictor(
                         codeInput,
                         cache: codePredictorCache,
                         generationStep: codeIdx
                     )
-                    eval(codeLogits)
 
                     // Sample
                     let nextCode = sampleToken(
@@ -708,6 +719,12 @@ public class Qwen3TTSModel: Module {
                         topP: topP
                     )
                     codeTokens.append(nextCode)
+
+                    // 15 号（表下标 14）的嵌入没有下一步要它，只进下面那个总和：
+                    // 就在这儿取，那一趟就不用再回表。
+                    if codeIdx == 14 {
+                        codeEmbeds.append(codePredictor.codecEmbedding[14](nextCode))
+                    }
                 }
             }
 
@@ -725,11 +742,9 @@ public class Qwen3TTSModel: Module {
             }
 
             // Compute codec embedding (sum of all 16 codebook embeddings)
-            var codecEmbed = talker.getInputEmbeddings()(nextToken)
-            if let codePredictor = talker.codePredictor {
-                for (i, code) in codeTokens.dropFirst().enumerated() {
-                    codecEmbed = codecEmbed + codePredictor.codecEmbedding[i](code)
-                }
+            var codecEmbed = codeEmbeds[0]
+            for embed in codeEmbeds.dropFirst() {
+                codecEmbed = codecEmbed + embed
             }
 
             currentInput = textEmbed + codecEmbed
@@ -828,21 +843,19 @@ public class Qwen3TTSModel: Module {
             instruct: instruct
         )
 
-        // Cap max_tokens based on target text length to prevent runaway generation
-        let targetTokenCount = tokenizer?.encode(text: text).count ?? text.count
-        let effectiveMaxTokens = min(maxTokens, max(75, targetTokenCount * 6))
+        // 帧数上限只由调用方给（`maxTokens`）。这里原来还有一道 `min(maxTokens, tokens*6)`：
+        // 48 个汉字按 0.6~1 token/字算是 29~48 个 token，那一道就把上限压到 174~288 帧
+        // （14~23 秒音频），而这一句正常读完只要 12 秒——跑到上限被硬截断的那一截是在句话中间，
+        // 而调用方按「预期时长 ×2.2」量音频长度（44 秒以内）判它合格，残句照旧落盘、永久复用。
+        // 长度口径只能有一个来源，否则「算得完」和「合格」是两套数。
+        let effectiveMaxTokens = maxTokens
 
         // Get EOS token ID
         let eosTokenId = talkerConfig.codecEosTokenId
 
         // Build suppress tokens list (special tokens except EOS)
         let vocabSize = talkerConfig.vocabSize
-        var suppressTokens = [Int]()
-        for i in (vocabSize - 1024)..<vocabSize {
-            if i != eosTokenId {
-                suppressTokens.append(i)
-            }
-        }
+        let suppressIndices = makeSuppressIndices(eosTokenId: eosTokenId, vocabSize: vocabSize)
 
         // Initialize cache
         let cache = talker.makeCache()
@@ -873,7 +886,7 @@ public class Qwen3TTSModel: Module {
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
                 generatedTokens: generatedTokens,
-                suppressTokens: suppressTokens,
+                suppressIndices: suppressIndices,
                 eosTokenId: eosTokenId
             )
 
@@ -888,7 +901,12 @@ public class Qwen3TTSModel: Module {
             onToken?(tokenValue)
 
             // Generate remaining 15 codebooks using Code Predictor
+            // `codeEmbeds[j]` = 第 j 号 codebook 的字面嵌入（下标和 `codeTokens` 对齐）。
+            // 0 号那张表就是 talker 的输入表，它既喂这里的 prefill，也进下面 `codecEmbed`
+            // 的总和——一帧取一次。
+            let code0Embed = talker.getInputEmbeddings()(nextToken)
             var codeTokens: [MLXArray] = [nextToken]
+            var codeEmbeds: [MLXArray] = [code0Embed]
 
             if let codePredictor = talker.codePredictor {
                 let seqLen = hiddenStates.dim(1)
@@ -900,22 +918,23 @@ public class Qwen3TTSModel: Module {
                     let codeInput: MLXArray
                     if codeIdx == 0 {
                         // Prefill: [hidden_state, code_0_embed]
-                        let code0Embed = talker.getInputEmbeddings()(nextToken)
                         codeInput = MLX.concatenated([codeHidden, code0Embed], axis: 1)
                     } else {
                         // Generation: only previous code embedding
-                        let prevCode = codeTokens[codeIdx]
-                        let codeEmbed = codePredictor.codecEmbedding[codeIdx - 1](prevCode)
+                        // 这一次 gather 的产物同时也是下面总和里的那一项，存下来复用。
+                        let codeEmbed = codePredictor.codecEmbedding[codeIdx - 1](codeTokens[codeIdx])
+                        codeEmbeds.append(codeEmbed)
                         codeInput = codeEmbed
                     }
 
                     // Forward through Code Predictor
+                    // 不在这里 `eval(codeLogits)`：下面采样那条链本来就要等它落定，
+                    // 先 eval 一次只是多一回提交并等待，一帧白付 15 次。
                     let (codeLogits, _, _) = codePredictor(
                         codeInput,
                         cache: codePredictorCache,
                         generationStep: codeIdx
                     )
-                    eval(codeLogits)
 
                     // Sample
                     let nextCode = sampleToken(
@@ -925,6 +944,12 @@ public class Qwen3TTSModel: Module {
                         topP: topP
                     )
                     codeTokens.append(nextCode)
+
+                    // 15 号（表下标 14）的嵌入没有下一步要它，只进下面那个总和：
+                    // 就在这儿取，那一趟就不用再回表。
+                    if codeIdx == 14 {
+                        codeEmbeds.append(codePredictor.codecEmbedding[14](nextCode))
+                    }
                 }
             }
 
@@ -942,11 +967,9 @@ public class Qwen3TTSModel: Module {
             }
 
             // Compute codec embedding (sum of all 16 codebook embeddings)
-            var codecEmbed = talker.getInputEmbeddings()(nextToken)
-            if let codePredictor = talker.codePredictor {
-                for (i, code) in codeTokens.dropFirst().enumerated() {
-                    codecEmbed = codecEmbed + codePredictor.codecEmbedding[i](code)
-                }
+            var codecEmbed = codeEmbeds[0]
+            for embed in codeEmbeds.dropFirst() {
+                codecEmbed = codecEmbed + embed
             }
 
             currentInput = textEmbed + codecEmbed
@@ -1079,12 +1102,7 @@ public class Qwen3TTSModel: Module {
 
         // Build suppress tokens list (special tokens except EOS)
         let vocabSize = talkerConfig.vocabSize
-        var suppressTokens = [Int]()
-        for i in (vocabSize - 1024)..<vocabSize {
-            if i != eosTokenId {
-                suppressTokens.append(i)
-            }
-        }
+        let suppressIndices = makeSuppressIndices(eosTokenId: eosTokenId, vocabSize: vocabSize)
 
         var trailingIdx = 0
         var currentInput = inputEmbeds
@@ -1110,7 +1128,7 @@ public class Qwen3TTSModel: Module {
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
                 generatedTokens: generatedTokens,
-                suppressTokens: suppressTokens,
+                suppressIndices: suppressIndices,
                 eosTokenId: eosTokenId
             )
 
@@ -1158,7 +1176,7 @@ public class Qwen3TTSModel: Module {
                     topP: topP,
                     repetitionPenalty: 1.0,
                     generatedTokens: [],
-                    suppressTokens: nil,
+                    suppressIndices: nil,
                     eosTokenId: nil
                 )
                 codeTokens.append(nextCode)
@@ -1323,7 +1341,8 @@ public class Qwen3TTSModel: Module {
         topK: Int = 50,
         topP: Float = 1.0,
         repetitionPenalty: Float = 1.05,
-        maxTokens: Int = 2048
+        maxTokens: Int = 2048,
+        onToken: ((Int) -> Void)? = nil
     ) async throws -> MLXArray {
         switch config.ttsModelType {
         case "voice_design":
@@ -1341,7 +1360,8 @@ public class Qwen3TTSModel: Module {
                 topK: topK,
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
-                maxTokens: maxTokens
+                maxTokens: maxTokens,
+                onToken: onToken
             )
 
         case "custom_voice":
@@ -1360,7 +1380,8 @@ public class Qwen3TTSModel: Module {
                 topK: topK,
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
-                maxTokens: maxTokens
+                maxTokens: maxTokens,
+                onToken: onToken
             )
 
         case "base":
@@ -1380,7 +1401,8 @@ public class Qwen3TTSModel: Module {
                 topK: topK,
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
-                maxTokens: maxTokens
+                maxTokens: maxTokens,
+                onToken: onToken
             )
 
         default:
@@ -1393,7 +1415,8 @@ public class Qwen3TTSModel: Module {
                 topK: topK,
                 topP: topP,
                 repetitionPenalty: repetitionPenalty,
-                maxTokens: maxTokens
+                maxTokens: maxTokens,
+                onToken: onToken
             )
         }
     }

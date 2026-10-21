@@ -26,8 +26,11 @@ struct SettingsView: View {
     )
     private var autoNextChapter = true
 
+    /// 键必须与 `VoiceManager.emotionEnhancementKey` 一致。写要走
+    /// `applyEmotionEnhancement`：只改值的话，正在读的那几章不会重新对账，
+    /// 千问权重也还挂在内存里，看上去就像拨了没生效。
     @AppStorage(
-        "emotionEnhancement"
+        VoiceManager.emotionEnhancementKey
     )
     private var emotionEnhancement = true
 
@@ -92,6 +95,9 @@ struct SettingsView: View {
                 speechSection
 
                 readingSection
+
+                // 千问那两份权重（解析用的 LLM、合成用的 TTS）不再随包，这里是拉回它们的入口。
+                ModelDownloadSection()
 
                 dataSection
 
@@ -168,10 +174,33 @@ private extension SettingsView {
                 )
 
                 Toggle(
-                    "增强情绪表现",
-                    isOn:
-                        $emotionEnhancement
+                    isOn: Binding(
+                        get: { emotionEnhancement },
+                        set: {
+                            emotionEnhancement = $0
+                            let on = $0
+                            Task {
+                                await pipeline.applyEmotionEnhancement(on)
+                            }
+                        }
+                    )
+                ) {
+                    Label(
+                        "增强情绪表现",
+                        systemImage:
+                            "face.smiling"
+                    )
+                }
+
+                Text(
+                    emotionEnhancement
+                        ? "开：整书解析逐批让千问校准情绪，念的时候按每句的情绪、语速、音调演。"
+                        : "关：整书解析只走规则引擎、一次都不问千问（那 1.xGB 权重随之一并卸载），"
+                            + "每句都按同一档中性语气念。句子里存的情绪参数不动，拨回来还是原来的表现；"
+                            + "往前的句子逐句重录，已经念过的保持原样。"
                 )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
 
                 Picker(
                     "语音合成后端",
@@ -230,7 +259,7 @@ private extension SettingsView {
                 + "或把 \(KokoroModelLocator.preferredDirectoryName) 放到 \(KokoroModelLocator.externalDirectoryNameHint) 后重启。"
         }
         if ttsEngineRaw == TTSEngineType.qwen3.rawValue, !Qwen3TTSService.modelAvailable() {
-            text += " 未找到 Qwen3-TTS 权重，这一档暂时出不了声。"
+            text += " 未下载 Qwen3-TTS 权重，这一档暂时出不了声：在下面「模型下载」那一节拉完即可，不用重启。"
         }
         return text
     }

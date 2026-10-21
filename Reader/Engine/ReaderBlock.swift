@@ -681,6 +681,9 @@ enum ReaderBlock {
     ///
     /// 页尾切下来的后半截（`continues`）永远是一片自成一块：它上面那半截在上一页，
     /// 这一页它就是开头，既不该再吃段前白，也不该被当成新段落断开。
+    ///
+    /// 图那一片同样自成一块，而且**它后面那一句必须另起一块**（`previousWasImage`）。
+    /// 一块 = 一个 `Text`，把图并进文字那块就得在一个 `Text` 里挖个图框，量的、排的立刻分家。
     static func groups(
         in slices: [PageSlice],
         sentences: [Sentence],
@@ -690,14 +693,27 @@ enum ReaderBlock {
         var groups: [[PageSlice]] = []
 
         var previousWasHeading = false
+        var previousWasImage = false
 
         // 换章那一瞬可能还拿着上一章算出来的页码，越界的下标先丢掉，别在这儿崩。
-        for slice in slices where sentences.indices.contains(slice.position) {
+        // 图那一片不受这条管：它的 `position` 按口径就是锚点，章末图的锚点是
+        // `sentences.count`，那是「最后一个句子之后」，合法但不是可索引的下标。
+        for slice in slices {
+
+            if slice.image != nil {
+                groups.append([slice])
+                previousWasHeading = false
+                previousWasImage = true
+                continue
+            }
+
+            guard sentences.indices.contains(slice.position) else { continue }
 
             let sentence = sentences[slice.position]
 
             let breaks = groups.isEmpty
                 || previousWasHeading
+                || previousWasImage
                 || (!slice.continues && sentence.startsParagraph)
 
             previousWasHeading = !slice.continues
@@ -705,6 +721,7 @@ enum ReaderBlock {
                     sentence,
                     chapterTitle: chapterTitle
                 )
+            previousWasImage = false
 
             if breaks {
                 groups.append([slice])
@@ -721,15 +738,21 @@ enum ReaderBlock {
     /// 分页按「句」装，所以一片就是一句，不再往句子上挂别的东西（从前那句首会多顶一行角色名，
     /// 于是「同一段里莫名空出一块」和「名字根本不是名字」两类事故都从那里来。对白靠引号认，
     /// 说话人只留给语音用）。
+    ///
+    /// 图那一片**不进这里**：它不是一个 `Text`，画多大由 `ReaderTypography.imageFrame` 定，
+    /// 渲染端拿到空 `runs` 就照着 `slice.image` 画图框。`groups` 保证了一块要么是图、要么是字，
+    /// 所以这里交空表不会让谁少排一块。
     static func runs(
         for group: [PageSlice],
         sentences: [Sentence],
         chapterTitle: String
     ) -> [Run] {
 
-        var runs = group.map { slice in
+        var runs = group.compactMap { slice -> Run? in
 
-            Run(
+            guard slice.image == nil else { return nil }
+
+            return Run(
                 position: slice.position,
                 text: slice.text,
                 kind: !slice.continues
@@ -818,21 +841,42 @@ enum ReaderBlock {
     /// 真机截图量过：一页 22 行，行顶间距几乎全是 92px，段落边界那一道一点也不更大——
     /// 段与段只看首行缩进能分出来，读者就说「行距和段距不一致」。
     /// 现在段前白 = 行距 + 额外留白，段间那道正好比行内多出一个 `paragraphGap`。
+    ///
+    /// 图那一片照正文分段一样让开（它上面是一段字）。`afterImage` 是反过来那一头：
+    /// 紧跟在图后面的那一句就是这张图的图注（锚点口径写在 `ChapterImage.anchor` 上——
+    /// 恒为图之后第一个段落的首句），整条段前白会让它离图一行多，读者以为那是下一段的开头，
+    /// 于是图和自己的图注分家。这里只留 `paragraphGap` 那一份，图注就贴在图下面。
+    ///
+    /// 为什么连「缝数」一起交回，而不是让调用方按 `height > 0` 自己数：渲染端挪行距时
+    /// 只挪得动段前白里那一份 `lineSpacing`（`ReaderPageView` 把加过挪量的行距喂回这一个函数，
+    /// 纯段距那一条跟着 `lineSpacing` 一动也不动）。收尾摊余量（`PageLayout.stretch(for:)`）
+    /// 按「每条缝最多压 `stretchCap`」记账，把压不动的那条也数进去就会以为还能压回来——
+    /// 密集插图那一章探针量到每栏溢出正好一条 |e|（1.36pt），而纸不滚动，那一行谁也看不见。
     static func gap(
         first slice: PageSlice,
         firstOnPage: Bool,
         sentences: [Sentence],
         size: CGFloat,
-        lineSpacing: CGFloat
-    ) -> CGFloat {
+        lineSpacing: CGFloat,
+        afterImage: Bool = false
+    ) -> (height: CGFloat, lineSpacingSeams: Int) {
 
-        guard !firstOnPage,
-              !slice.continues,
+        guard !firstOnPage else { return (0, 0) }
+
+        if slice.image != nil {
+            return (lineSpacing + ReaderTypography.paragraphGap(size: size), 1)
+        }
+
+        if afterImage {
+            return (ReaderTypography.paragraphGap(size: size), 0)
+        }
+
+        guard !slice.continues,
               sentences.indices.contains(slice.position),
               sentences[slice.position].startsParagraph
-        else { return 0 }
+        else { return (0, 0) }
 
-        return lineSpacing + ReaderTypography.paragraphGap(size: size)
+        return (lineSpacing + ReaderTypography.paragraphGap(size: size), 1)
     }
 
     /// 这一块的实测高度。

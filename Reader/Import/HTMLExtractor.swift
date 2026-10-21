@@ -9,9 +9,39 @@ import Foundation
 
 enum HTMLTextExtractor {
 
-    static func extractText(
+    /// 正文里一处 `<img>` 的替身：一个私用区字符，占一个「字」的位置。
+    ///
+    /// 为什么要它：往下第三步就把所有标签删光了，图在那之前不留痕迹，事后没人知道
+    /// 图上纸该站在哪一段之后。换成这一个字符，段落边界（`\n`）照旧由 `<p>` 提供，
+    /// 于是「独占一段的图」洗出来就是一行只有哨兵——锚点从这一行来（见 `EPUBParser.imageAnchors`）。
+    ///
+    /// 私用区（U+E000…）正常文本里不会出现，`SentenceSplitter` 认它不是可朗读字符，
+    /// 摘掉它之后剩下的句子和「书里根本没有图」那一份逐字相同。
+    ///
+    /// 为什么从标量造而不是写 `"\u{E000}"`：那种纯转义字面量在 Swift 里只当 String 看，
+    /// 标成 `Character` 编译器直接拒（实测 `cannot convert value of type 'String'`），
+    /// 而摘哨兵那一趟是按**字符**过滤的。String 由这一个字符生成，两头必然是同一个东西。
+    ///
+    /// 名字必须带 `Swift.`：这个 target 里有一个表示「人物」的 `Character`（见 `Models/Character.swift`），
+    /// 不写限定就撞上它，编译器给你的报错是「参数不 conform Decoder」——完全看不出为什么的那种。
+    static let imageMarkerCharacter: Swift.Character = Swift.Character(UnicodeScalar(0xE000)!)
+
+    static let imageMarker = String(imageMarkerCharacter)
+
+    /// 认 `<img>` 与 SVG 的 `<image>` 的**唯一**一条正则：换哨兵（``markingImages``）
+    /// 和数重复率（``imageHrefs``）必须走同一个口径，否则「送去排图的张数」和
+    /// 「书单上记的张数」会从根上分家——该跳的 logo 没跳、该画的图没画。
+    private static let imageTagPattern = "<(?:img|image)\\b[^>]*>"
+
+    private static let imageTagRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: imageTagPattern,
+        options: [.caseInsensitive]
+    )
+
+    /// XHTML → 正文，外加「这一章有哪些图、按出现顺序」。
+    static func extractBody(
         from html: String
-    ) -> String {
+    ) -> (text: String, imageHrefs: [String]) {
 
         // 只解析 <body> 内容：
         // CSS / <style> / <link> / <meta> 都在 <head> 中，
@@ -57,6 +87,13 @@ enum HTMLTextExtractor {
                 tag: "style",
                 from: text
             )
+
+        // 图片换成哨兵。必须在换行标签那一步**之前**：那时 `<p>` 还在，
+        // 图段才会连着自己的段落边界一起留下来；也必须在删标签那一步之前，
+        // 否则 src 跟着标签一起没了。
+
+        let marked = markingImages(text)
+        text = marked.text
 
         // 换行标签
 
@@ -126,10 +163,165 @@ enum HTMLTextExtractor {
         // 见 ``joiningSoftLineBreaks``。
         text = joiningSoftLineBreaks(text)
 
-        return text
-            .trimmingCharacters(
+        return (
+            text.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            ),
+            marked.imageHrefs
+        )
+    }
+
+    /// 只要正文、不要图的那一层薄壳（取证代码与老调用方走这条）。
+    static func extractText(
+        from html: String
+    ) -> String {
+        extractBody(from: html).text
+    }
+
+    /// 把每一个带 href 的 `<img>`/`<image>` 换成一个 ``imageMarker``，src 按文档顺序交出去。
+    ///
+    /// `<image>` 也管：固定版式（漫画、画集）用 SVG 那一个，`<img>` 是普通正文用的。
+    /// 认不出 src 的那种（背景图 `style="background-image:url(...)"` 之类）原样删掉，
+    /// 不留哨兵——留了也画不出东西，反倒占掉一个段落位。
+    static func markingImages(
+        _ text: String
+    ) -> (text: String, imageHrefs: [String]) {
+
+        guard let regex = imageTagRegex else {
+            return (text, [])
+        }
+
+        let range = NSRange(
+            text.startIndex..<text.endIndex,
+            in: text
+        )
+
+        var output = ""
+        output.reserveCapacity(text.count)
+
+        var hrefs: [String] = []
+        var cursor = text.startIndex
+
+        for match in regex.matches(in: text, options: [], range: range) {
+            guard let matchRange = Range(match.range, in: text) else { continue }
+
+            let tag = String(text[matchRange])
+
+            guard let href = imageHref(in: tag) else {
+                // 没有 src 的 img 不是图，是一个占位的空标签：删掉，等价于从前。
+                output.append(contentsOf: text[cursor..<matchRange.lowerBound])
+                cursor = matchRange.upperBound
+                continue
+            }
+
+            output.append(contentsOf: text[cursor..<matchRange.lowerBound])
+
+            if occupiesOwnBlock(text, at: matchRange) {
+                // 独占一块的图要自己占一行：见 ``occupiesOwnBlock``。
+                output.append("\n\n")
+                output.append(imageMarker)
+                output.append("\n\n")
+            } else {
+                output.append(imageMarker)
+            }
+
+            hrefs.append(href)
+            cursor = matchRange.upperBound
+        }
+
+        output.append(contentsOf: text[cursor...])
+
+        return (output, hrefs)
+    }
+
+    /// 这一张图是不是**独占一个块**：往前、往后各跳过空白，撞到的第一个字符必须是
+    /// 标签的尾（`>`）或头（`<`），中间不许有一个字。
+    ///
+    /// 为什么要分这一档：`joiningSoftLineBreaks` 只承认「两个及以上连续换行」为段落边界，
+    /// 而 `</p><img/><p>` 这种不写空行的源文件（calibre 生成的网文普遍如此）前后各只有
+    /// 一个换行——哨兵一插，那两个单换行都被当成段内折行接掉，于是两段并成一段，
+    /// 图的锚点还退到**它前面**那一段的头顶（我欲封天实测 117 处，锚=本章最后一段的段首句）。
+    /// 判成独占块就多铺两个换行，段落边界一定保住；图混在字里那一类（inline）原样插哨兵，
+    /// 因为「书里根本没有图」的那份在这一处也没有边界，多铺反而把一段劈成两段。
+    private static func occupiesOwnBlock(
+        _ text: String,
+        at range: Range<String.Index>
+    ) -> Bool {
+
+        let whitespaces: Set<Swift.Character> = [" ", "\t", "\n", "\u{00A0}"]
+
+        // 往前跳空白，取撞到的**第一个非空白字符**（注意：不能拿 `back` 位置上的字符去比，
+        // 那个位置在没跳过任何空白时就是 `<img>` 自己的 `<`，判据会永远不成立）。
+        var back = range.lowerBound
+        var before: Swift.Character?
+        while back > text.startIndex {
+            let previous = text.index(before: back)
+            if whitespaces.contains(text[previous]) {
+                back = previous
+            } else {
+                before = text[previous]
+                break
+            }
+        }
+        // 一路都是空白（图就在正文最前）：前面没有字，按独占算。
+        let beforeIsTagEnd = before == nil || before == ">"
+
+        var forward = range.upperBound
+        while forward < text.endIndex, whitespaces.contains(text[forward]) {
+            forward = text.index(after: forward)
+        }
+        let afterIsTagStart = forward == text.endIndex || text[forward] == "<"
+
+        return beforeIsTagEnd && afterIsTagStart
+    }
+
+    /// 这一页 html 里所有图的 src，按出现顺序。**要保留哨兵、要洗正文的场合别用它**，
+    /// 那是 ``markingImages`` 的活；这里只为「数一张图重复了几章」那一趟而不再洗一遍正文。
+    static func imageHrefs(in html: String) -> [String] {
+
+        guard let regex = imageTagRegex else { return [] }
+
+        let range = NSRange(
+            html.startIndex..<html.endIndex,
+            in: html
+        )
+
+        var hrefs: [String] = []
+
+        for match in regex.matches(in: html, options: [], range: range) {
+            guard let matchRange = Range(match.range, in: html),
+                  let href = imageHref(in: String(html[matchRange]))
+            else { continue }
+
+            hrefs.append(href)
+        }
+
+        return hrefs
+    }
+
+    /// 一个 `<img>` 开标签里的图地址。`src` 优先，SVG 的 `xlink:href` / `href` 兜底。
+    private static func imageHref(in tag: String) -> String? {
+
+        for name in ["src", "xlink:href", "href"] {
+            let pattern = "\(name)\\s*=\\s*[\"']([^\"']+)[\"']"
+            guard let regex = try? NSRegularExpression(
+                pattern: pattern,
+                options: [.caseInsensitive]
+            ), let match = regex.firstMatch(
+                in: tag,
+                options: [],
+                range: NSRange(tag.startIndex..<tag.endIndex, in: tag)
+            ), match.numberOfRanges > 1,
+              let valueRange = Range(match.range(at: 1), in: tag)
+            else { continue }
+
+            let value = String(tag[valueRange]).trimmingCharacters(
                 in: .whitespacesAndNewlines
             )
+            if !value.isEmpty { return value }
+        }
+
+        return nil
     }
 
     /// 删掉**两侧都是中文语境**的行内空格（半角空格、制表符、nbsp）。

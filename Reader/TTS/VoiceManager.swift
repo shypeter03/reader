@@ -105,6 +105,78 @@ enum VoiceManager {
         )
     }
 
+    // MARK: - 增强情绪表现（出声口径）
+
+    /// 「增强情绪表现」那个开关存哪儿。设置页的 Toggle 写的是同一个键。
+    static let emotionEnhancementKey = "emotionEnhancement"
+
+    /// 每次现读，不缓存成常量：拨完开关下一句就该变，缓存要等重启才生效。
+    /// 没有记录算开（老用户升级后行为不变，和「语音播报」同一套默认）。
+    static var enhancesEmotion: Bool {
+        UserDefaults.standard.object(forKey: emotionEnhancementKey) as? Bool ?? true
+    }
+
+    /// 一句真正进合成的朗读参数。
+    struct SpeechStyle: Equatable {
+        var emotion: Emotion
+        var intensity: Double
+        var speed: Double
+        var pitch: Double
+        var voiceStrength: Double
+    }
+
+    /// 句子里存着的那组参数——开着增强时照着演。
+    static func storedStyle(of sentence: Sentence) -> SpeechStyle {
+        SpeechStyle(
+            emotion: sentence.emotion,
+            intensity: sentence.emotionIntensity,
+            speed: sentence.speed,
+            pitch: sentence.pitch,
+            voiceStrength: sentence.voiceStrength
+        )
+    }
+
+    /// 「增强情绪表现」关掉时压平到中性那一档：每句的 instruct 完全相同，
+    /// 这就是需求里那句「所有话都是统一语气」。
+    ///
+    /// **只在出声这一处压平**，句子里存的 emotion / speed / … 一个都不改：开关拨回来
+    /// 立刻恢复原样，代价只是重录，不必再跑一遍标注。真去抹存储字段的话，抹掉的
+    /// 正是用户关掉开关之前想要的东西，而且再也回不来。
+    ///
+    /// `enhances` 给默认值就是现读那一下；逐句扫一章的调用方（开章那次对账）自己提上去
+    /// 读一次，省掉每句一趟 UserDefaults。
+    static func style(for sentence: Sentence, enhances: Bool = enhancesEmotion) -> SpeechStyle {
+        enhances
+            ? storedStyle(of: sentence)
+            : SpeechStyle(
+                emotion: .neutral,
+                intensity: Emotion.neutral.defaultIntensity,
+                speed: Emotion.neutral.defaultSpeed,
+                pitch: Emotion.neutral.defaultPitch,
+                voiceStrength: Emotion.neutral.defaultVoiceStrength
+            )
+    }
+
+    /// 参数指纹，给音频对账用（见 ``Sentence/recordedStyle``）。
+    ///
+    /// 比的是**渲染出来的那组数**，不是「开关翻没翻面」：本来就落在中性档的那些句子
+    /// （旁白多半是）instruct 一个字都没变，按翻面一律重录等于白录半本书，而每一句
+    /// 都是 GPU 几十秒换来的。
+    static func styleSignature(_ style: SpeechStyle) -> String {
+        "\(style.emotion.rawValue)|\(style.intensity)|\(style.speed)|\(style.pitch)|\(style.voiceStrength)"
+    }
+
+    /// 手上这句的音频是不是按现在这一档语气录的。
+    ///
+    /// 两处问它（`TTSGenerator.produce` 的缓存命中、开章那次对账），判的必须是同一份：
+    /// 两边口径差一点，句子就在「过期/新鲜」之间来回跳，删了录、录了删永不收敛。
+    /// 没记 `recordedStyle` 的老数据按「当时照着存储参数演」折算——一律判过期会把
+    /// 整本书重录一遍，而开着增强时那些音频本来就正是这一档。
+    static func styleMatches(_ sentence: Sentence, enhances: Bool = enhancesEmotion) -> Bool {
+        let recorded = sentence.recordedStyle ?? styleSignature(storedStyle(of: sentence))
+        return recorded == styleSignature(style(for: sentence, enhances: enhances))
+    }
+
     // MARK: - Style Prompt (emotion / speed / pitch / voiceStrength)
 
     /// 依据语音规划参数生成 CustomVoice 的 instruction 文本。

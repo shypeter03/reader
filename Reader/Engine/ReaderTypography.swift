@@ -147,6 +147,50 @@ enum ReaderTypography {
         ) >= body * CGFloat(minColumnLetters) ? 2 : 1
     }
 
+    // MARK: - 图
+
+    /// 一张图在纸上占多大的框。**分页量和渲染画都问这一个函数**：两边各算一遍就是
+    /// 「页里给图留了 200pt、纸上画了 240pt」，多出来那 40pt 会从页尾漏出去（页尾那条红线）。
+    ///
+    /// 两条上限各治一件事：
+    ///
+    /// 1. **宽**：不超过栏宽，也不按原图放大。`pixelWidth / 2` 是「视网膜屏上 1:1 的边长」——
+    ///    源文件的像素按 2x 存，所以原图 980px 在 349pt 的栏里正好铺满；而一张 200px 的小图
+    ///    只给 100pt，剩下那半截宽留着。拉满栏是给模糊让路：把小图放大到两倍，纸上就是一团马赛克。
+    /// 2. **高**：不超过 `usableHeight × 0.7`，超了就**等比**缩（宽跟着一起缩，不裁切）。
+    ///    留 30% 是给图注和它上面那一句的：一张图占满一整页时，读者翻页看见的是「一页纸、
+    ///    一行字」，而图注被挤到下一页去——图和自己的图注分家比图小一点严重得多。
+    ///
+    /// 尺寸不知道（`pixelWidth/Height` 为 0）就不画：等比缩放没有基准，硬给一个方框只会把
+    /// 排版撑成一块看不出所以然的白。解析端本来也已经在 `ChapterImage.minimumImageEdge` 那挡掉了这种。
+    static func imageFrame(
+        _ image: ChapterImage,
+        columnWidth: CGFloat,
+        usableHeight: CGFloat
+    ) -> CGSize {
+
+        guard image.pixelWidth > 0, image.pixelHeight > 0 else {
+            return .zero
+        }
+
+        let aspect = CGFloat(image.pixelWidth) / CGFloat(image.pixelHeight)
+
+        var width = min(columnWidth, CGFloat(image.pixelWidth) / 2)
+        var height = width / aspect
+
+        let cap = usableHeight * imageMaxHeightRatio
+        if height > cap {
+            // 等比缩：高顶到上限，宽跟着走。缩出来的宽必然还 ≤ 原来那个宽，不会再撞栏。
+            height = cap
+            width = cap * aspect
+        }
+
+        return CGSize(width: width, height: height)
+    }
+
+    /// 一张图最多占掉这一栏可用高的多少。见 `imageFrame` 第 2 条。
+    static let imageMaxHeightRatio: CGFloat = 0.7
+
     // MARK: - 双页
 
     /// 一张纸摊成左右两面时，**每一面**一行至少要容得下这么多个字才许摊。

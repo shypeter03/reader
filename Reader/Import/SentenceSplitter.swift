@@ -279,4 +279,22 @@ enum SentenceSplitter {
     static func spokenCharacterCount(_ text: String) -> Int {
         text.filter { $0.isLetter || $0.isNumber }.count
     }
+
+    /// 这一句是不是**被裁开的半句**——作者并没有写到这里就说完。
+    ///
+    /// 认法只有一个来源，就是 `capping` 下刀的那两种地方：弱边界之后（尾巴是「，、；：」），
+    /// 或者那一段里一个标点都没有、硬按上限切（尾巴落在字或数字上）。看最后一个字符就够了。
+    /// 句号那一族（「。！？」和合上的引号）不在其中：那本来就是说完的一句。
+    ///
+    /// 谁需要这个判断：合成那一头的静音留白。半句和它的后半句是两次独立合成，各自带一段
+    /// 尾静音，中间还夹着播放器换 `AVPlayerItem` 的空档；尾巴再按「句号」那档留一整个呼吸，
+    /// 听感就是「一句话说到某个字突然停一下」。
+    ///
+    /// 误判的只有作者自己把**段落**收在逗号上的那一种（罕见），代价是那一段的下一段
+    /// 早半拍接上——比把每一处真接缝都留成句号长要好。
+    static func endsMidClause(_ text: String) -> Bool {
+        guard let last = text.last else { return false }
+        if last.isLetter || last.isNumber { return true }
+        return weakBoundaries.contains(last)
+    }
 }

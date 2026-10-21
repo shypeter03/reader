@@ -27,6 +27,13 @@ struct EPUBBook: Identifiable {
     /// 章节索引
     let chapters: [ChapterDescriptor]
 
+    /// 一张图（按 `ChapterImage.imageKey` 归一）在这本书里出现过几**章**，一章内重复只算一次。
+    /// 导入那一趟顺路数出来的，喂给 `Book.imageTally`。
+    ///
+    /// 刻意**不给默认值**：漏传编译不过。带默认值的这一份实测踩过——`importBook` 忘了传，
+    /// 整本书的表静悄悄是空的，装饰图一条也筛不掉，而探针只打印数字不判对错，看不出来。
+    let imageTally: [String: Int]
+
     init(
         id: UUID = UUID(),
         title: String,
@@ -34,7 +41,8 @@ struct EPUBBook: Identifiable {
         rootURL: URL,
         opfDirectory: URL,
         coverURL: URL?,
-        chapters: [ChapterDescriptor]
+        chapters: [ChapterDescriptor],
+        imageTally: [String: Int]
     ) {
         self.id = id
         self.title = title
@@ -43,6 +51,7 @@ struct EPUBBook: Identifiable {
         self.opfDirectory = opfDirectory
         self.coverURL = coverURL
         self.chapters = chapters
+        self.imageTally = imageTally
     }
 }
 
@@ -56,7 +65,8 @@ extension EPUBBook {
             author: author,
             coverURL: storedCoverURL(),
             epubRootURL: rootURL,
-            chapters: chapters
+            chapters: chapters,
+            imageTally: imageTally
         )
     }
 

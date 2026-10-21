@@ -44,11 +44,15 @@
 		5222145E303EF7C10022E4E3 /* EPUBBook.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222145D303EF7C10022E4E3 /* EPUBBook.swift */; };
 		52221460303EF7D10022E4E3 /* ChapterDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5222145F303EF7D10022E4E3 /* ChapterDescriptor.swift */; };
 		52221462303F03B90022E4E3 /* MLXQwenService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52221461303F03B90022E4E3 /* MLXQwenService.swift */; };
+		52C1D30130D2000000000001 /* ModelManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D30130D1000000000001 /* ModelManifest.swift */; };
+		52C1D30130D2000000000002 /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D30130D1000000000002 /* ModelStore.swift */; };
+		52C1D30130D2000000000003 /* ModelDownloadCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D30130D1000000000003 /* ModelDownloadCenter.swift */; };
+		52C1D30130D2000000000004 /* ModelDownloadSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D30130D1000000000004 /* ModelDownloadSection.swift */; };
+		52C1D30130D2000000000005 /* Qwen3TTSTokenizer in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D30130D1000000000005 /* Qwen3TTSTokenizer */; };
 		5235D15830411F65006B7E3A /* SpeechAudioBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5235D15730411F54006B7E3A /* SpeechAudioBridge.swift */; };
 		523A87DB306382F2006394D9 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 52AA0002304400000012DAD8 /* MLX */; };
 		523A87DC306382F2006394D9 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 52AA0003304400000012DAD8 /* MLXNN */; };
 		523A87DD306382F2006394D9 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 52AA0004304400000012DAD8 /* MLXFast */; };
-		523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */; };
 		525CEC9E303FA9FC00260A94 /* AIError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CEC9D303FA9FA00260A94 /* AIError.swift */; };
 		525CECA0303FAA6500260A94 /* AIAnalysisResult.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CEC9F303FAA6300260A94 /* AIAnalysisResult.swift */; };
 		525CECB3303FB21000260A94 /* AITools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525CECB2303FB20C00260A94 /* AITools.swift */; };
@@ -90,7 +94,6 @@
 		52C1D7213060000000000001 /* EdgeTTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7203060000000000001 /* EdgeTTSService.swift */; };
 		52C1D7233060000000000003 /* ChapterStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1D7223060000000000003 /* ChapterStore.swift */; };
 		52AA000030AA00000000B02 /* BookPagination.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52AA000030AA00000000B01 /* BookPagination.swift */; };
-		52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */ = {isa = PBXBuildFile; fileRef = 52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */; };
 		52C1DB013080000000000002 /* Qwen3TTSService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB013080000000000001 /* Qwen3TTSService.swift */; };
 		52C1DB023080000000000002 /* AudioUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB023080000000000001 /* AudioUtils.swift */; };
 		52C1DB033080000000000002 /* CodePredictor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C1DB033080000000000001 /* CodePredictor.swift */; };
@@ -170,8 +173,12 @@
 		5222145D303EF7C10022E4E3 /* EPUBBook.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBBook.swift; sourceTree = "<group>"; };
 		5222145F303EF7D10022E4E3 /* ChapterDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterDescriptor.swift; sourceTree = "<group>"; };
 		52221461303F03B90022E4E3 /* MLXQwenService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MLXQwenService.swift; sourceTree = "<group>"; };
+		52C1D30130D1000000000001 /* ModelManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelManifest.swift; sourceTree = "<group>"; };
+		52C1D30130D1000000000002 /* ModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelStore.swift; sourceTree = "<group>"; };
+		52C1D30130D1000000000003 /* ModelDownloadCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadCenter.swift; sourceTree = "<group>"; };
+		52C1D30130D1000000000004 /* ModelDownloadSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelDownloadSection.swift; sourceTree = "<group>"; };
+		52C1D30130D1000000000005 /* Qwen3TTSTokenizer */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Qwen3TTSTokenizer; sourceTree = "<group>"; };
 		5235D15730411F54006B7E3A /* SpeechAudioBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechAudioBridge.swift; sourceTree = "<group>"; };
-		523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3TTSCache/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit"; sourceTree = "<absolute>"; };
 		525CEC9D303FA9FA00260A94 /* AIError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIError.swift; sourceTree = "<group>"; };
 		525CEC9F303FAA6300260A94 /* AIAnalysisResult.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAnalysisResult.swift; sourceTree = "<group>"; };
 		525CECA1303FAA7200260A94 /* AIJSONDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIJSONDecoder.swift; sourceTree = "<group>"; };
@@ -200,7 +207,6 @@
 		52C1D7203060000000000001 /* EdgeTTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EdgeTTSService.swift; sourceTree = "<group>"; };
 		52C1D7223060000000000003 /* ChapterStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChapterStore.swift; sourceTree = "<group>"; };
 		52AA000030AA00000000B01 /* BookPagination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookPagination.swift; sourceTree = "<group>"; };
-		52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "Qwen3-0.6B-MLX-4bit"; path = "/Users/suhaiyang/Models/Qwen3-0.6B-MLX-4bit"; sourceTree = "<absolute>"; };
 		52C1DB013080000000000001 /* Qwen3TTSService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Qwen3TTSService.swift; sourceTree = "<group>"; };
 		52C1DB023080000000000001 /* AudioUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioUtils.swift; sourceTree = "<group>"; };
 		52C1DB033080000000000001 /* CodePredictor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodePredictor.swift; sourceTree = "<group>"; };
@@ -290,9 +296,8 @@
 		522213E4303EE4160022E4E3 /* Reader */ = {
 			isa = PBXGroup;
 			children = (
-				523A89443063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit */,
-				52C1D90030700000000000B1 /* Qwen3-0.6B-MLX-4bit */,
 				52C1EC063090000000000001 /* kokoro-int8-multi-lang-v1_1 */,
+				52C1D30130D3000000000001 /* ModelBundle */,
 				52221458303EF3EC0022E4E3 /* Import */,
 				52221440303EE7FC0022E4E3 /* View */,
 				5222143D303EE7540022E4E3 /* Core */,
@@ -313,6 +318,14 @@
 				522213EB303EE4170022E4E3 /* Preview Content */,
 			);
 			path = Reader;
+			sourceTree = "<group>";
+		};
+		52C1D30130D3000000000001 /* ModelBundle */ = {
+			isa = PBXGroup;
+			children = (
+				52C1D30130D1000000000005 /* Qwen3TTSTokenizer */,
+			);
+			path = ModelBundle;
 			sourceTree = "<group>";
 		};
 		522213EB303EE4170022E4E3 /* Preview Content */ = {
@@ -409,6 +422,9 @@
 				52AA000030AA00000000B01 /* BookPagination.swift */,
 				52AA000030AA000000000F01 /* CharacterRoster.swift */,
 				52C1F0013099000000000001 /* ReaderCache.swift */,
+				52C1D30130D1000000000001 /* ModelManifest.swift */,
+				52C1D30130D1000000000002 /* ModelStore.swift */,
+				52C1D30130D1000000000003 /* ModelDownloadCenter.swift */,
 			);
 			path = Storage;
 			sourceTree = "<group>";
@@ -447,6 +463,7 @@
 				5222144B303EE9790022E4E3 /* ChapterRow.swift */,
 				5222144D303EE9EC0022E4E3 /* PlayerManager.swift */,
 				52221451303EEA550022E4E3 /* SettingsView.swift */,
+				52C1D30130D1000000000004 /* ModelDownloadSection.swift */,
 			);
 			path = View;
 			sourceTree = "<group>";
@@ -656,8 +673,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				522213ED303EE4170022E4E3 /* Preview Assets.xcassets in Resources */,
-				52C1D90030700000000000B2 /* Qwen3-0.6B-MLX-4bit in Resources */,
-				523A89453063B9E2006394D9 /* Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-4bit in Resources */,
+				52C1D30130D2000000000005 /* Qwen3TTSTokenizer in Resources */,
 				52C1EC063090000000000002 /* kokoro-int8-multi-lang-v1_1 in Resources */,
 				522213EA303EE4170022E4E3 /* Assets.xcassets in Resources */,
 			);
@@ -718,6 +734,10 @@
 				52AA000030AA000000000D02 /* AppLog.swift in Sources */,
 				525CEC9E303FA9FC00260A94 /* AIError.swift in Sources */,
 				52221462303F03B90022E4E3 /* MLXQwenService.swift in Sources */,
+				52C1D30130D2000000000001 /* ModelManifest.swift in Sources */,
+				52C1D30130D2000000000002 /* ModelStore.swift in Sources */,
+				52C1D30130D2000000000003 /* ModelDownloadCenter.swift in Sources */,
+				52C1D30130D2000000000004 /* ModelDownloadSection.swift in Sources */,
 				5222144E303EE9EC0022E4E3 /* PlayerManager.swift in Sources */,
 				52221457303EF3A80022E4E3 /* EPUBParser.swift in Sources */,
 				525CECA0303FAA6500260A94 /* AIAnalysisResult.swift in Sources */,

@@ -60,9 +60,9 @@ actor FallbackTTSService {
     private struct Slot {
         let engine: TTSEngineType
 
-        /// 权重到没到位。没打进来是**结构性**不可用：一次都不该试，更不该拿失败去计数。
-        /// 只在排链时查一次（file manager），不每句查。
-        let present: Bool
+        /// 权重到没到位。没就位是**结构性**不可用：一次都不该试，更不该拿失败去计数。
+        /// 排链时查一次，之后只在 `ModelStore.changeCount` 变动时重查（见 `refreshPresenceIfChanged`）。
+        var present: Bool
 
         /// 建一次就留着：引擎/权重只该在第一次用时载一遍。nil = 还没用过。
         var service: (any TTSService)?
@@ -78,6 +78,9 @@ actor FallbackTTSService {
 
     /// 「已经降到后面那一槽」这句话本进程只说一次。
     private var didLogFallback = false
+
+    /// 上一次查权重时 `ModelStore.changeCount` 的值。相同就不重查（每句都要比的是这个整数）。
+    private var presenceCount = ModelStore.changeCount
 
     init() {
         let selected = TTSEngineType.current
@@ -178,6 +181,17 @@ actor FallbackTTSService {
 
                 return TTSSynthesis(data: data, backend: slots[index].engine)
 
+            } catch let LocalTTSError.outputRejected(reason) {
+                // 「这一段的两趟输出都没过时长质检」和「这个后端坏了」是两件事，只能分开记：
+                // 质检判的是这一句的输出（模型对短句、对白碎片的产出本来就不稳），
+                // 而 `failures` 攒到 `failureThreshold` 会把这个槽在**整条链**里永久摘掉
+                // （`skipped` 只有换后端、权重增删、`unloadAll` 才复位）。
+                // 拿质检去计数的后果：四句短对白就能干掉唯一还在本地跑的引擎，
+                // 而落回磁盘的那几句是 `.failed`，播放器直接跳过——表现是「突然再也不出声」。
+                // 这一句仍然换下一格试（下一格多半是 Edge，它对同样的短句不会漂）。
+                lastError = LocalTTSError.outputRejected(reason)
+                print("⚠️ [TTS质检] \(slots[index].engine.rawValue) 这一段两次没过时长质检（\(reason)），换下一格重试；这一类不计入连坏、不摘后端")
+
             } catch {
                 slots[index].failures += 1
                 lastError = error
@@ -245,6 +259,8 @@ actor FallbackTTSService {
     /// 先换 `slots` 再逐个卸载：中间那个 `await` 让出线程时，新的句子已经按新顺位在跑了，
     /// 而它用的实例是刚建的那个，不会被这场卸载误伤。
     private func applySelectionIfChanged() async {
+        await refreshPresenceIfChanged()
+
         let selected = TTSEngineType.current
         guard selected != appliedSelection else { return }
         appliedSelection = selected
@@ -258,14 +274,50 @@ actor FallbackTTSService {
         Self.logChain(selected, changed: true)
     }
 
+    /// 权重现在是运行时长回来的（设置 → 模型下载），排链那一次查的 `present` 会过期。
+    ///
+    /// 判据是 `ModelStore.changeCount`：每句进来比一个整数，只有装成/删掉过一套才真去
+    /// stat 一次目录（每句现查等于把 file manager 塞进合成热路径）。计数没变就直接返回。
+    private func refreshPresenceIfChanged() async {
+        let count = ModelStore.changeCount
+        guard count != presenceCount else { return }
+        presenceCount = count
+
+        for index in slots.indices {
+            let present = Self.weightsPresent(slots[index].engine)
+            guard present != slots[index].present else { continue }
+
+            slots[index].present = present
+            // 计数与「不再试它」都归零：结构变了，旧的判定不算。
+            slots[index].failures = 0
+            slots[index].skipped = false
+
+            if !present, let service = slots[index].service {
+                await Self.release(service)
+                slots[index].service = nil
+            }
+            print("[TTS] \(slots[index].engine.rawValue) 权重\(present ? "已就位 → 重新排进降级链" : "不在了 → 从降级链里摘掉，权重已卸载")")
+        }
+    }
+
     private static func logChain(_ selected: TTSEngineType, changed: Bool) {
         let order = rotation(for: selected).map(\.rawValue).joined(separator: " → ")
         print("[TTS] 后端=\(selected.rawValue) 缓存子目录=\(selected.audioNamespace ?? "(平铺)") 顺位=\(order)"
             + (changed ? " ← 设置已改，立即生效，不用重启" : ""))
         // 缺权重要说出来：否则「为什么这一句没有退路」只能去猜是规则没生效还是包没打进东西。
         for engine in defaultOrder where !weightsPresent(engine) {
-            print("[TTS] \(engine.rawValue) 权重未就位，这一条链上它那一格是空的"
-                + "（本地后端的权重靠 folder reference 在 build 时拷进 App；放哪里怎么找，设置页那一行写着）")
+            print("[TTS] \(engine.rawValue) 权重未就位，这一条链上它那一格是空的（\(weightRemedy(engine))）")
+        }
+    }
+
+    /// 缺的那一格怎么补。Kokoro 那一份仍由 build 时的 folder reference 进 App，千问的两份
+    /// 现在是运行时下载（2026-10 拆包），两句话不能混着说——照着错的那一句去找地方就白找。
+    private static func weightRemedy(_ engine: TTSEngineType) -> String {
+        switch engine {
+        case .qwen3:
+            return "权重要在设置页「模型下载」那一节拉，拉完不用重启"
+        case .sherpaKokoro, .edge:
+            return "本地后端的权重靠 folder reference 在 build 时拷进 App；放哪里怎么找，设置页那一行写着"
         }
     }
 }

@@ -451,12 +451,20 @@ actor ReaderPipeline {
     /// 两条队列都挂住、在飞的推理掐掉、两边权重全部交还。
     /// 和上面两道闸**分开记**：合成一道闸的话，回前台会把用户已经关掉的语音又放回来。
     private var speechHeld = false
+    /// 千问解析权重没下载（它不再随包，见 `ModelStore`）。单独一道闸，理由和上面几个一样要分开记。
+    ///
+    /// 这一道不加就是数据损坏级的后果：权重不在时每批都 throw `modelNotLoaded`，用尽额度就记成
+    /// `failed` 终态，用户后来下载了模型也不会回来重跑那一章——那些句子永远停在正则那一档。
+    /// 挂住只是不再取新批次，排产记录一条不丢，所以下载完是接着跑，不是重跑。
+    private var analysisHeldByMissingWeights = false
     /// 在飞的任务体。进后台时掐掉会提交 GPU 的那些：队列的闸只挡得住后面的新任务，
     /// 正在推理的这一批/这一句还会一帧帧往 Metal 里塞 command buffer，而那正是崩溃现场。
     /// 每个任务体跑在独立子 Task 里，就是为了能掐它而不连 worker 循环一起取消
     /// （worker 一死，回前台就再没有取任务的人了）。
     private let inFlight = InFlightRegistry()
     private var backgroundObservers: [NSObjectProtocol] = []
+    /// 盯「模型下载完成/删除」的那一条，和 `backgroundObservers` 同起同落。
+    private var modelObserver: NSObjectProtocol?
     /// worker 取走、还没跑完的句子数。权重不能在合成中途释放（在飞的推理正在用它，
     /// 那是崩溃路径），所以卸载前必须先问这个。
     private var ttsJobsActive = 0
@@ -521,10 +529,14 @@ actor ReaderPipeline {
         // 「语音播报」也可能是关着的（用户上次出门前关的）：不起闸就等于答应了一件不做的事——
         // worker 一跑起来就是几百批 LLM 推理，而这一刻没有任何人需要声音。
         await applySpeechEnabled(Self.speechEnabledByUser())
+        // 千问权重没下载时同样先把闸挂上再起 worker：worker 一跑起来就是每批必失败，
+        // 用尽额度的批次会落成 `failed` 终态，之后下载了模型也不会回来重跑。
+        await applyAnalysisWeights(ModelStore.isReady(.qwen3LLM))
         for _ in 0..<analysisWorkers { workers.append(Task { await self.worker(for: .analysisBatch) }) }
         for _ in 0..<ttsWorkers { workers.append(Task { await self.worker(for: .ttsSentence) }) }
         workers.append(Task { await self.importConsumer() })
         installBackgroundObservers()
+        installModelObserver()
     }
     func stop() async {
         workers.forEach { $0.cancel() }; workers.removeAll()
@@ -541,7 +553,9 @@ actor ReaderPipeline {
         // 这里不复位的话，下次 start() 的 applySpeechEnabled 会因为「状态没变」跳过，
         // 于是关着语音却照样跑 GPU。
         speechHeld = false
+        analysisHeldByMissingWeights = false
         removeBackgroundObservers()
+        removeModelObserver()
         await analysisQueue.setSuspended(false)
         await analysisQueue.stop(); await ttsQueue.stop()
         importStopped = true
@@ -607,6 +621,44 @@ actor ReaderPipeline {
         knownBooks[book.id] = book
         await start()
         _ = await fillAnalysisWindow(book)
+        // 图的重复率单独一趟：它要读几百个文件，不该插在「点开一章 1s 出正文」那条路上，
+        // 也不该挡住解析窗口排产。
+        Task { await self.backfillImageTally(book) }
+    }
+
+    /// 已经补算过的书（哪怕结果是空表——一本纯文字的书没有图是正常的）。空表也算补过，
+    /// 否则每次打开都要重扫一遍全书文件。
+    private var tallyBackfilled: Set<UUID> = []
+
+    /// 老书单的图重复率表是在这张表出现之前落库的（`Book.imageTally == nil`），
+    /// 装饰图那条判据当场问不到——不补，网文那一本枚一枚的书壳 logo 会一张张画上纸。
+    ///
+    /// 为什么不在导入时算：新导入的那本 `importBook` 顺路就数出来了（同一趟读盘），
+    /// 这里只管在那之前入库的存量。
+    private func backfillImageTally(_ book: Book) async {
+
+        guard book.imageTally == nil, tallyBackfilled.insert(book.id).inserted else { return }
+
+        let urls = book.chapters.map(\.fileURL)
+        let started = CFAbsoluteTimeGetCurrent()
+
+        let tally = await Task.detached(priority: .utility) {
+            EPUBParser.imageTally(chapterURLs: urls)
+        }.value
+
+        var updated = book
+        updated.imageTally = tally
+
+        // 书单和内存里那一份要同时换： ReaderView 下一次开这本书读的是盘上的，
+        // 而这一趟还在跑的排版问的是 `knownBooks`。
+        knownBooks[book.id] = updated
+        await BookStore.shared.update(updated)
+
+        let decorative = tally.values.count {
+            ChapterImage.isDecorativeImage(occurrences: $0, chapterCount: urls.count)
+        }
+
+        print("[Images] book=\(book.id.uuidString.prefix(8)) 补算重复率：\(urls.count) 章 \(tally.count) 种图，判装饰 \(decorative) 种，\(String(format: "%.1f", CFAbsoluteTimeGetCurrent() - started))s")
     }
 
     /// 用户停下（暂停/停止）：心跳立即作废，后台解析不用等新鲜窗口过期。
@@ -637,10 +689,29 @@ actor ReaderPipeline {
         startResumeWatch()
     }
 
-    /// 队列上只有一个布尔，三个理由（收听 / 后台 / 用户关掉语音）都往它上面折算。
+    /// 队列上只有一个布尔，四个理由（收听 / 后台 / 用户关掉语音 / 权重没下载）都往它上面折算。
     private func syncSuspension() async {
-        await analysisQueue.setSuspended(analysisSuspended || analysisHeldByBackground || speechHeld)
+        await analysisQueue.setSuspended(
+            analysisSuspended || analysisHeldByBackground || speechHeld || analysisHeldByMissingWeights
+        )
         await ttsQueue.setSuspended(ttsHeldByBackground || speechHeld)
+    }
+
+    /// 千问解析权重的就位情况。下载完成/删除由 `ModelStore` 发通知驱动，`start()` 也按
+    /// 现值算一次（冷启动那一刻不会有通知来）。
+    ///
+    /// 只挂分析这一条队列：TTS 侧本来就按「这一格有没有权重」决定试不试（见
+    /// `FallbackTTSService.weightsPresent`），缺 Qwen3 时 Edge / Kokoro 照常出声。
+    func applyAnalysisWeights(_ present: Bool) async {
+        guard analysisHeldByMissingWeights != !present else { return }
+        analysisHeldByMissingWeights = !present
+        await syncSuspension()
+        print(
+            present
+                ? "[Gate] 千问解析权重已就位 → 恢复整书解析（排队中 \(await analysisQueue.pendingCount) 个批次）"
+                : "[Gate] 千问解析权重未下载 → 挂起整书解析（排队中 \(await analysisQueue.pendingCount) 个批次，"
+                    + "「设置 → 模型下载」下完自己接着跑；句子标注先用正则那一档）"
+        )
     }
 
     // MARK: - 用户关掉语音
@@ -676,6 +747,29 @@ actor ReaderPipeline {
         await syncSuspension()
         print("[Gate] 语音播报已开启 → 恢复合成与解析（排队中 \(await analysisQueue.pendingCount) 个批次、"
             + "\(await ttsQueue.pendingCount) 句）" + (AppBackgroundGate.shared.isBackground ? "｜后台门禁还挂着，实际未放行" : ""))
+    }
+
+    /// 「增强情绪表现」的落点：设置页拨开关走这里。
+    ///
+    /// 关的是「为情绪做的两件事」：整书解析不再问千问（每批只跑规则，见 `run` 的
+    /// analysisBatch 分支），出声时朗读参数压成统一中性档（见 ``VoiceManager/style(for:enhances:)``）。
+    /// 句子里存的情绪参数一个字都不改，所以拨回来是原样恢复，不必重标一遍。
+    ///
+    /// 这里只补两件收尾：权重当场交还（关着的时候没人再用它），以及把**正在读的章**
+    /// 立刻重对账——语气过期原本只在开章时纠，拨完开关回到书页还得先翻一页才变，
+    /// 看上去就像开关根本没生效。
+    func applyEmotionEnhancement(_ on: Bool) async {
+        // 有批次在飞时不动权重：推理还在用，抢不得（后台那条路上就是这么定的），
+        // 由那一批收尾时的 `unloadAnalyzerIfIdle` 补上——所以那边也认这一档。
+        if !on { await unloadAnalyzerIfIdle() }
+
+        for (bookID, chapterID) in readingChapters {
+            guard let chapter = await cachedChapter(bookID: bookID, chapterID: chapterID) else { continue }
+            _ = await purgeReclaimedAudio(chapter, bookID: bookID)
+        }
+
+        print("[Voice] 「增强情绪表现」已\(on ? "开启：整书解析回到千问校准，出声照存储的情绪参数" : "关闭：整书解析只走规则、不问千问，所有句子统一按中性档出声")"
+            + "（播放头之前的句子保持原样，往后的逐句重录）")
     }
 
     /// 进/出后台。由 App 的生命周期通知直接驱动，不靠 SwiftUI 的 `scenePhase`：
@@ -773,6 +867,26 @@ actor ReaderPipeline {
         let center = NotificationCenter.default
         backgroundObservers.forEach { center.removeObserver($0) }
         backgroundObservers.removeAll()
+    }
+
+    /// 权重下载完成/删除。这里只挂闸，不碰在飞的那一批：解析用的 MLX 权重只有在**就位**
+    /// 时才可能被提交，缺权重那一路是加载就抛错，不存在中途失去权重的崩溃现场。
+    private func installModelObserver() {
+        guard modelObserver == nil else { return }
+        modelObserver = NotificationCenter.default.addObserver(
+            forName: ModelStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { await self?.applyAnalysisWeights(ModelStore.isReady(.qwen3LLM)) }
+        }
+    }
+
+    private func removeModelObserver() {
+        if let modelObserver {
+            NotificationCenter.default.removeObserver(modelObserver)
+        }
+        self.modelObserver = nil
     }
 
     /// 进后台那一刻可能正好有一句在合成，闸只能挡后面的。最后一句跑完再补一次卸载。
@@ -1120,8 +1234,16 @@ actor ReaderPipeline {
     /// 正文取导入时后台解析落库的那一份，点开章节不再跑 XML 解析。
     /// 只有落库缺失（后台还没排到、清过缓存）或断句口径对不上（规则改过）才回落解析器。
     private func loadParsedChapter(_ descriptor: ChapterDescriptor, bookID: UUID) async throws -> Chapter {
+        // `isVolumeDivider != nil` 这一条是给卷扉页补的一次重判：老落库那份是在这条规则之前
+        // 写的，里面还留着「我欲封天 / 作者：耳根」那种书壳样板句，照 textVersion 判会原样端上来，
+        // 卷页就还是「被当作章节，但什么也不展示」。字段缺过一遍就够了，不必抬 `textVersion`
+        // ——抬它等于把整本书重切一遍。
+        // `imagesVersion` 同一个道理，管的是图的锚点：老那份根本没记图，重解一趟才画得出。
+        // 两把闸一起只让老数据重解**一次**（第一次重解就把两个字段都写对了）。
         if let saved = await cachedChapter(bookID: bookID, chapterID: descriptor.id),
-           saved.textVersion == SentenceSplitter.textVersion {
+           saved.textVersion == SentenceSplitter.textVersion,
+           saved.isVolumeDivider != nil,
+           saved.imagesVersion == ImageExtraction.version {
             return await purgeReclaimedAudio(saved, bookID: bookID)
         }
         let raw = try EPUBParser.loadChapter(descriptor)
@@ -1181,10 +1303,14 @@ actor ReaderPipeline {
         var chapter = chapter
         var reclaimed: [Int] = []
         var drifted: [Int] = []
+        // 语气口径过期（拨了「增强情绪表现」）的那几句：单独一格，日志才说得清是
+        // 换了嗓还是换了演法。
+        var styleDrifted: [Int] = []
         // 正在播的那一句放过：播放器是按 URL 拿着 AVPlayerItem 在读的，
         // 这里把它退回待合成，队列立刻就能轮到它，`produce` 会先删旧文件再录——
         // 文件在播放中途消失，表现是当前这句哑掉。下次开章再纠它。
         let playing = readingPositions[chapter.id]
+        let enhances = VoiceManager.enhancesEmotion
         for i in chapter.sentences.indices {
             guard let url = chapter.sentences[i].audioURL else { continue }
             if !FileManager.default.fileExists(atPath: url.path) {
@@ -1196,15 +1322,24 @@ actor ReaderPipeline {
             }
             // 没记声音的老数据按「旧口径」折算，不是一律判错：否则第一次开章会把
             // 整本书的旁白（本来就用对了 Uncle_Fu）全删了重录。
-            let expected = VoiceResolution.resolve(sentence: chapter.sentences[i], chapter: chapter, bookID: bookID)
-            let recorded = chapter.sentences[i].recordedVoiceID ?? VoiceResolution.legacy(for: chapter.sentences[i])
-            guard recorded != expected, i != playing, !protecting.contains(i) else { continue }
+            let sentence = chapter.sentences[i]
+            let expected = VoiceResolution.resolve(sentence: sentence, chapter: chapter, bookID: bookID)
+            let recorded = sentence.recordedVoiceID ?? VoiceResolution.legacy(for: sentence)
+            // 语气这一档和 `produce` 的缓存命中问的是同一个函数：两处判得不一样，
+            // 句子就会在「过期/新鲜」之间来回跳，删了录、录了删永不收敛。
+            let styleStale = !VoiceManager.styleMatches(sentence, enhances: enhances)
+            guard recorded != expected || styleStale,
+                  i != playing, !protecting.contains(i) else { continue }
             chapter.sentences[i].audioURL = nil
             chapter.sentences[i].duration = nil
             chapter.sentences[i].audioStatus = .pending
             // recordedVoiceID 留着：磁盘上那个文件确实还是那把声音，
             // `produce` 靠它认出该删的是哪一个。
-            drifted.append(i)
+            if recorded != expected {
+                drifted.append(i)
+            } else {
+                styleDrifted.append(i)
+            }
         }
 
         // 名字之外还有一层身份：**这句由哪个后端出声**（见 `TTSEngineType.backend(ofAudioAt:)`）。
@@ -1248,7 +1383,7 @@ actor ReaderPipeline {
             print("[Voice] chapter=\(chapter.index) 有 \(foreignCandidates.count) 句不在主后端 \(primary.rawValue) 上，但已过半数 → 当作换后端保留，不重录")
         }
 
-        guard !reclaimed.isEmpty || !drifted.isEmpty || !offBackend.isEmpty else { return chapter }
+        guard !reclaimed.isEmpty || !drifted.isEmpty || !styleDrifted.isEmpty || !offBackend.isEmpty else { return chapter }
         chapter.ttsStatus = .partial
         chapter.audioStatus = .generating
         try? await chapterStore.save(chapter: chapter, bookID: bookID)
@@ -1259,6 +1394,10 @@ actor ReaderPipeline {
         }
         if !drifted.isEmpty {
             print("[Voice] chapter=\(chapter.index) 有 \(drifted.count) 句的声音与人物档案不符，退回待合成（只重录这些句，旁白与无名对话不动）")
+        }
+        if !styleDrifted.isEmpty {
+            print("[Voice] chapter=\(chapter.index) 有 \(styleDrifted.count) 句的语气和「增强情绪表现」这一档不符，退回待合成"
+                + "（存的情绪参数没动，只是出声时照不照它演的区别）")
         }
         return chapter
     }
@@ -1647,7 +1786,16 @@ actor ReaderPipeline {
                 var cursor = start
                 while cursor < end {
                     let upper = cursor < headEnd ? headEnd : end
-                    let working = try await analyzer.analyzeBatch(chapter: base, range: cursor..<upper, context: StoryContext(characters: [], recentCharacters: [], recentEvents: []))
+                    // 「增强情绪表现」关着时这批不许问模型：规则那一档已经把 emotion /
+                    // speed / pitch / voiceStrength 全填满，`analysisStatus` 也钉成 completed
+                    // （见 FastChapterAnalyzer.annotate），跳过 LLM 不会饿着下面的 TTS 排产。
+                    // 省下的是一次 0.6B 推理和它那 1.xGB 权重——用户要的「纯规则引擎」就是这一条。
+                    let working: Chapter
+                    if VoiceManager.enhancesEmotion {
+                        working = try await analyzer.analyzeBatch(chapter: base, range: cursor..<upper, context: StoryContext(characters: [], recentCharacters: [], recentEvents: []))
+                    } else {
+                        working = base
+                    }
                     // 被后台掐掉的生成不会报错：MLXLMCommon 在 token 边界自查取消后
                     // 就把已经吐出的半截文本正常返回了。这一步必须挡在合并之前——
                     // 半截 JSON 能解析出前几句，合并进库就成了「参数突然变了但其实没分析完」。
@@ -1680,6 +1828,7 @@ actor ReaderPipeline {
                         // 声音标记和音频是同一件产物的属性：只跟着音频走，
                         // 留在旧快照上会把「这句是谁录的」记岔，过期检查就看不出真过期。
                         updated.recordedVoiceID = old.recordedVoiceID
+                        updated.recordedStyle = old.recordedStyle
                         // 播放头之后 LLM 说了算。规则版音频若参数被改，删文件重录：
                         // 不删的话 produce 的磁盘命中会把旧 WAV 原样取回来。
                         // 下面按本批范围排产，这一句会作为新任务重排——逐句任务做完就
@@ -1836,6 +1985,11 @@ actor ReaderPipeline {
             // 进后台那一刻正好有批次在跑，闸只挡得住后面的：排队的批次还成千上万，
             // 光看 pendingCount 就永远等不到「排空」，权重白占着 1.2GB。
             reason = "后台门禁已挂起"
+        } else if !VoiceManager.enhancesEmotion {
+            // 「增强情绪表现」关着：标注只走规则，千问在这一档下再也没有用途，
+            // 所以排队批次再多也不该留着那 1.xGB。放在 pendingCount 那一支**之前**——
+            // 排到后面就永远等不到「队列排空」，权重白占着。
+            reason = "「增强情绪表现」已关闭，标注只走规则"
         } else if await analysisQueue.pendingCount == 0 {
             reason = "分析队列排空"
         } else {

@@ -3,11 +3,12 @@
 //  Reader
 //
 //  一页正文。渲染口径必须与 `PageLayout` 的测量口径逐字对应——字号、行距、
-//  段首缩进、块怎么切、页边距全部走 `ReaderTypography` 和 `ReaderBlock`，
+//  段首缩进、块怎么切、页边距、图框多大全部走 `ReaderTypography` 和 `ReaderBlock`，
 //  任何一处只在一边改，页高就会算错，表现是「字溢到下一页」或整页空一半。
 //
 
 import SwiftUI
+import ImageIO
 
 /// 不带滚动的一页内容。单独拆出来是为了能被脱离滚动容器量出固有高度
 /// （测量/校验用），`ReaderPageView` 只是给它定位并剪掉溢出的那一行。
@@ -51,6 +52,19 @@ struct ReaderPageBody: View {
     /// 双页时它是**这一面**的边距，靠中缝那一条就是中缝阴影的宽（见 `crease`）。
     let sideMargin: CGFloat
 
+    /// 一张纸给正文用的高，由分页端随页交过来（`PageLayout.usableHeight`）。
+    ///
+    /// 它只有一处在纸上被问：一张图框多大（`ReaderTypography.imageFrame` 的高上限是它的 0.7）。
+    /// 不许渲染端按 `GeometryReader` 实测的那一份自己算——那是第二把尺，纸面比分页那块地方
+    /// 矮一点时纸上就画得比页里留的高，多出来那几 pt 就是页尾掉出去的那一行。
+    let usableHeight: CGFloat
+
+    /// 这一章的 XHTML 在机器上的位置。图存的是相对本章目录的 `href`（不落绝对路径，理由见
+    /// `ChapterImage.href`），纸上要用时才由这里现解成文件路径。
+    ///
+    /// 它不参与测量，只参与取图：解错了顶多画出一块白，不会改一行的高。
+    let chapterURL: URL
+
     /// 底色与字色。不参与测量，只参与渲染。
     let theme: ReaderTheme
 
@@ -66,6 +80,13 @@ struct ReaderPageBody: View {
     /// 前者要告诉读者这一章真的没有可朗读的正文，后者什么都不必说——它就该是
     /// 一张白纸，冒出那行提示就成了 bug。
     var blank = false
+
+    /// 卷扉页要印的那行卷名（「第一卷 在澹州」）。nil = 这不是扉页。
+    ///
+    /// 扉页是零句的一章（判据与成因见 `EPUBParser.isVolumeDivider`），所以它和「真·空章」
+    /// 在句数上长得一模一样——没有这一声说明，纸上就会印出「这一章没有可朗读的正文」那句提示，
+    /// 读者看见的就是「这一卷坏了」。有这一行就居中印卷名：那是一页书的扉页，不是一页故障。
+    var dividerTitle: String? = nil
 
     let tap: (Int) -> Void
 
@@ -176,18 +197,26 @@ struct ReaderPageBody: View {
 
             if column.isEmpty, sentences.isEmpty, !blank {
 
-                // 只在「这一章真的没有正文」时说这句话。首次布局还没跑完时
-                // 页也是空的，那种时候留白，别闪一下提示。
-                Text(
-                    "这一章没有可朗读的正文（图片页或空白页）"
-                )
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .frame(
-                    maxWidth: .infinity,
-                    alignment: .center
-                )
-                .padding(.top, 40)
+                if let dividerTitle, !dividerTitle.isEmpty {
+
+                    volumeDivider(
+                        dividerTitle
+                    )
+                } else {
+
+                    // 只在「这一章真的没有正文」时说这句话。首次布局还没跑完时
+                    // 页也是空的，那种时候留白，别闪一下提示。
+                    Text(
+                        "这一章没有可朗读的正文（图片页或空白页）"
+                    )
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .frame(
+                        maxWidth: .infinity,
+                        alignment: .center
+                    )
+                    .padding(.top, 40)
+                }
             }
 
             ForEach(
@@ -198,6 +227,9 @@ struct ReaderPageBody: View {
                 blockView(
                     group,
                     firstOnColumn: blockIndex == 0,
+                    afterImage:
+                        blockIndex > 0
+                        && groups[blockIndex - 1][0].image != nil,
                     lineSpacingExtra: extra
                 )
             }
@@ -208,11 +240,52 @@ struct ReaderPageBody: View {
         )
     }
 
+    /// 卷扉页：整面纸只印一行卷名，居中。
+    ///
+    /// 不参与测量——扉页那一面纸分页端按「零句」交出来（`PageLayout.paginate` 的
+    /// `pages.isEmpty` 那条兜底就是一面），印什么、印多大都不改页数，所以这里想居中
+    /// 就直接撑满这一栏的高，不必和行距账发生关系。
+    @ViewBuilder
+    private func volumeDivider(
+        _ title: String
+    ) -> some View {
+
+        Text(
+            title
+        )
+            .font(
+                .system(
+                    size: bodySize * 1.6,
+                    weight: .semibold
+                )
+            )
+            .foregroundStyle(
+                theme.text
+            )
+            .multilineTextAlignment(
+                .center
+            )
+            .fixedSize(
+                horizontal: false,
+                vertical: true
+            )
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .center
+            )
+    }
+
     /// 一块一个 `Text`：同段的句子连着走，行距从头到尾一个值。
+    ///
+    /// 图那一块不是一条 `Text`，是纸上的一个框：高宽一律现问 `ReaderTypography.imageFrame`
+    /// （和分页端同一个函数、同两个输入），框里那张图什么时候解出来都不改这一块的高——
+    /// 改了读者就看见栏底跳一下，而分页端留的那份白当场就不作数了。
     @ViewBuilder
     private func blockView(
         _ group: [PageSlice],
         firstOnColumn: Bool,
+        afterImage: Bool,
         lineSpacingExtra: CGFloat
     ) -> some View {
 
@@ -224,44 +297,84 @@ struct ReaderPageBody: View {
 
         let heading = runs.first?.kind == .heading
 
-        // 基础行距 + 这一栏的垂直对齐拉伸。段前白 `gap` 里含一个 `lineSpacing`，
-        // 所以把抬过的 `spacing` 一起喂给它，段前白那条缝也跟着多抬 `lineSpacingExtra`
-        // ——分页摊余量时按「块内行距缝 + 段前白缝」一起数的，这里少抬一条末行就压不到底。
+        // 基础行距 + 这一栏的垂直对齐拉伸。段前白 `gap` 里含不含一个 `lineSpacing`，
+        // 由 `gap` 自己交回的 `lineSpacingSeams` 说（分页端数缝用的是同一个数）：
+        // 含的那一种把抬过的 `spacing` 喂进去就跟着一起抬，纯段距那一种（紧跟图的图注）
+        // 怎么挪行距都纹丝不动——分页端若把它当成能挪的缝，收尾就永远差那一条缝的量。
         let spacing = ReaderTypography.lineSpacing(
             size: bodySize,
             scale: lineScale
         ) + lineSpacingExtra
 
-        Text(
-            ReaderBlock.attributedString(
-                runs: runs,
-                body: bodySize,
-                width: columnWidth,
-                color: color(for:)
-            )
-        )
-            .lineSpacing(spacing)
-            .multilineTextAlignment(
-                heading ? .center : .leading
-            )
-            .frame(
-                maxWidth: .infinity,
-                alignment: heading ? .center : .leading
-            )
-            .fixedSize(
-                horizontal: false,
-                vertical: true
+        let gap = ReaderBlock.gap(
+            first: group[0],
+            firstOnPage: firstOnColumn,
+            sentences: sentences,
+            size: bodySize,
+            lineSpacing: spacing,
+            afterImage: afterImage
+        ).height
+
+        if let image = group[0].image {
+
+            figure(
+                image
             )
             .padding(
                 .top,
-                ReaderBlock.gap(
-                    first: group[0],
-                    firstOnPage: firstOnColumn,
-                    sentences: sentences,
-                    size: bodySize,
-                    lineSpacing: spacing
+                gap
+            )
+        } else {
+
+            Text(
+                ReaderBlock.attributedString(
+                    runs: runs,
+                    body: bodySize,
+                    width: columnWidth,
+                    color: color(for:)
                 )
             )
+                .lineSpacing(spacing)
+                .multilineTextAlignment(
+                    heading ? .center : .leading
+                )
+                .frame(
+                    maxWidth: .infinity,
+                    alignment: heading ? .center : .leading
+                )
+                .fixedSize(
+                    horizontal: false,
+                    vertical: true
+                )
+                .padding(
+                    .top,
+                    gap
+                )
+        }
+    }
+
+    /// 一张图在纸上占的那一块。位置按书的规矩居中：一张比栏窄的图贴在左边看着就是没排完。
+    private func figure(
+        _ image: ChapterImage
+    ) -> some View {
+
+        ReaderFigureView(
+            url: EPUBHref.resolve(
+                href: image.href,
+                relativeTo: chapterURL.deletingLastPathComponent()
+            ),
+            // 和分页端 `PageLayout.imageHeight` 同一个式子、同两个输入：那一面留了多少高，
+            // 这里就画多大。`renderGuard` 那半 pt 是留给落纸的余量，不画进去。
+            size: ReaderTypography.imageFrame(
+                image,
+                columnWidth: columnWidth,
+                usableHeight: usableHeight
+            )
+        )
+        .frame(
+            maxWidth: .infinity,
+            alignment: .center
+        )
     }
 
     /// 当前句只换颜色，不换字号/字重：换了这页的行数就和测量结果对不上，
@@ -278,6 +391,147 @@ struct ReaderPageBody: View {
             // 看起来像整页被压了透明度
             ? theme.text
             : theme.text.opacity(theme.inactiveOpacity)
+    }
+}
+
+/// 纸上的一张图。
+///
+/// 框是死的：`.frame(width:height:)` 用的就是分页端那一份 `imageFrame`，图有没有解出来、
+/// 解得多快都不改这一块的高。这一条不是讲究——栏高跟着解码走的话，读者看见的是「字先在那儿，
+/// 图一到又挤走一行」，而分页端给这一张留的那份白当场作废（页尾那条红线反了）。
+/// 所以没解出来之前这里就是一块纸色，什么都不画。
+///
+/// 解码一律走 ImageIO 的缩略图接口、并且挪出主线程：EPUB 里的插图常常是打印稿尺寸
+/// （一张 2480×3508 的 JPEG 全量解码就是二十几兆内存），而纸上要的框最宽不过一栏。
+/// 口径和封面那一条一样（`CoverFace.load`），按 2x 边长解、不放大——`imageFrame` 给出的宽
+/// 本来就是 `pixelWidth / 2` 那一格，解到这一格刚好是屏幕上的 1:1。
+struct ReaderFigureView: View {
+
+    let url: URL
+
+    let size: CGSize
+
+    /// 解出来的那一份，连着它是**哪个 url** 解的：`CurlPageTurner` 的纸面缓存会拿同一个视图
+    /// 换内容，只比 `url` 不比图就会把上一页的图印在这一页的框里。
+    @State private var loaded: ReaderFigureLoader.Result?
+
+    var body: some View {
+
+        ZStack {
+            if loaded?.url == url, let image = loaded?.image {
+
+                Image(uiImage: image)
+                    .resizable()
+                    // 框本身等比（`imageFrame` 担保），装进去不拉伸；用 fit 而不是 fill 是
+                    // 给「缩略图边长和框差一个取整零头」留白——fill 会把那一圈裁掉，还会溢出。
+                    .scaledToFit()
+            }
+        }
+        .frame(
+            width: size.width,
+            height: size.height
+        )
+        .task(id: ReaderFigureLoader.key(url: url, size: size)) {
+
+            guard size.width >= 1, size.height >= 1 else { return }
+
+            loaded = await ReaderFigureLoader.load(url: url, size: size)
+        }
+    }
+}
+
+/// 一张纸上的图从磁盘到位图这一段路：按需下采样 + 按「路径 × 目标边长」缓存。
+///
+/// 为什么按边长也进 key：同一张图在单栏那一档要 349pt 宽、双栏那一档只要 174pt。
+/// 拿 174pt 那份去填 349pt 的框就是放大一倍，纸上是一团马赛克；反过来白解一倍像素。
+enum ReaderFigureLoader {
+
+    struct Key: Hashable {
+        let path: String
+        let maxPixelSize: Int
+    }
+
+    struct Result {
+        let url: URL
+        let image: UIImage
+    }
+
+    /// 命中与否都只问一次 JSON 之外的东西：NSCache 自己在内存告急时清，这一层的图
+    /// 随时能从文件重解，所以不另设上限，也不需要「清空缓存」那类手动口径。
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func key(
+        url: URL,
+        size: CGSize
+    ) -> Key {
+        Key(
+            path: url.path,
+            maxPixelSize: Int(
+                (max(size.width, size.height) * 2)
+                    .rounded(.up)
+            )
+        )
+    }
+
+    static func load(
+        url: URL,
+        size: CGSize
+    ) async -> Result? {
+
+        let maxPixelSize = CGFloat(key(url: url, size: size).maxPixelSize)
+        let cacheKey = "\(url.path)|\(Int(maxPixelSize))" as NSString
+
+        if let hit = cache.object(forKey: cacheKey) {
+            return Result(url: url, image: hit)
+        }
+
+        // 解码留在主线程之外：一张 3000px 的书内彩图原地解就是几十毫秒的账，压在
+        // 翻页那一拍上就是「纸面卡一下」。（注：operation 必须走尾闭包，
+        // `Task.detached(priority:, { … })` 这种把闭包写在括号里的形式，SDK 上
+        // 重载匹配不上，报的是 `Success could not be inferred`。）
+        let image = await Task.detached(priority: .userInitiated) {
+            decode(url: url, maxPixelSize: maxPixelSize)
+        }.value
+
+        guard let image else {
+            // [Images] 取证：解不出来在纸上就是一块白，屏上看不出是「文件不在了」还是「这张图坏了」。
+            // #29 那一类（⌘R 之后解压出来的 EPUB 不在容器里）就是从这一行认出来的。
+            print("[Images] 解不出 \(url.lastPathComponent)：\(url.path)")
+            return nil
+        }
+
+        cache.setObject(image, forKey: cacheKey)
+
+        return Result(url: url, image: image)
+    }
+
+    private static func decode(
+        url: URL,
+        maxPixelSize: CGFloat
+    ) -> UIImage? {
+
+        guard let source = CGImageSourceCreateWithURL(
+            url as CFURL,
+            nil
+        ) else {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(maxPixelSize, 1),
+        ]
+
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            options as CFDictionary
+        ) else {
+            return nil
+        }
+
+        return UIImage(cgImage: thumbnail)
     }
 }
 
@@ -409,6 +663,11 @@ struct ReaderPageView: View {
     /// 所以它必须和分页端量高时用的是同一个数。
     let sideMargin: CGFloat
 
+    /// 分页端那一份可用高（`PageLayout.usableHeight`）和这一章的 XHTML 位置，两样都只为
+    /// 「画一张图」而穿过来：图框的高上限问前者，`href` 解成文件路径问后者。
+    let usableHeight: CGFloat
+    let chapterURL: URL
+
     let theme: ReaderTheme
 
     let chapterTitle: String
@@ -425,6 +684,9 @@ struct ReaderPageView: View {
 
     /// 这是不是一张有意留白的补位纸（双页摊不满时那半张，见 `CurlPageTurner` 口径 ④）。
     var blank = false
+
+    /// 卷扉页的卷名（`ReaderPageBody.dividerTitle`）。nil = 正常那一页。
+    var dividerTitle: String? = nil
 
     /// 中缝在我这一面的哪一条边上；单页时 nil。
     ///
@@ -471,10 +733,13 @@ struct ReaderPageView: View {
                     columnStretch: columnStretch,
                     contentWidth: paper.size.width - sideMargin * 2,
                     sideMargin: sideMargin,
+                    usableHeight: usableHeight,
+                    chapterURL: chapterURL,
                     theme: theme,
                     chapterTitle: chapterTitle,
                     activePosition: activePosition,
                     blank: blank,
+                    dividerTitle: dividerTitle,
                     tap: tap
                 )
                 .frame(
